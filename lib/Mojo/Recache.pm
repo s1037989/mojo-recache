@@ -178,6 +178,14 @@ Used in a main app:
   warn $cache->cacheable_thing;
   warn $cache->cacheable_thing;
 
+Used in a Mojolicious::Lite app:
+
+  use Mojolicious::Lite;
+  helper cache => sub { Mojo::Recache->new(expires => 3600, app => shift) };
+  helper cacheable_think => sub { sleep 5; return time; };
+  get '/' => sub { $_[0]->render(text => $_[0]->cache->cacheable_thing) };
+  app->start;
+
 Refreshed with a minion worker (takes the same arguments as
 L<Minion::Command::worker>:
 
