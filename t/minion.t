@@ -21,7 +21,7 @@ my $cache = Mojo::Recache->new(app => __PACKAGE__, home => path(__FILE__)->dirna
 $minion = $cache->minion;
 $pg = $minion->backend->pg;
 $minion->backend->pg->search_path(['minion_test']);
-unlink $cache->file('fd4f16df902fda892dadf2dd1bf40742')->to_string;
+$cache->file('fd4f16df902fda892dadf2dd1bf40742')->remove;
 
 # Nothing to repair
 my $worker = $minion->repair->worker;
@@ -42,7 +42,7 @@ is $cache->enqueued('fd4f16df902fda892dadf2dd1bf40742'), 1, 'not enqueued twice'
 
 # Clean up once we are done
 $pg->db->query('drop schema minion_test cascade');
-unlink $cache->file('fd4f16df902fda892dadf2dd1bf40742')->to_string;
+$cache->file('fd4f16df902fda892dadf2dd1bf40742')->remove;
 
 sub abc {
   sleep 2;

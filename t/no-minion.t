@@ -4,8 +4,8 @@ use Test::More;
 use Mojo::File 'path';
 use Mojo::Recache;
 
-my $cache = Mojo::Recache->new(app => 'main', home => path(__FILE__)->dirname);
-unlink $cache->file('fd4f16df902fda892dadf2dd1bf40742')->to_string;
+my $cache = Mojo::Recache->new(app => __PACKAGE__, home => path(__FILE__)->dirname);
+$cache->file('fd4f16df902fda892dadf2dd1bf40742')->remove;
 $cache->on(retrieved => sub { is pop, 'fd4f16df902fda892dadf2dd1bf40742', 'emitted right received name' });
 $cache->on(stored => sub { is pop, 'fd4f16df902fda892dadf2dd1bf40742', 'emitted right stored name' });
 is $cache->start, undef, 'start disabled due to minion disabled';
@@ -30,7 +30,7 @@ ok $t3 - $t2 > 1, 'first cache';
 is $cache->abc, 123, 'right second cache value';
 my $t4 = time;
 ok $t4 - $t3 == 0, 'second cache';
-unlink $file;
+$file->remove;
 
 sub abc {
   sleep 2;
