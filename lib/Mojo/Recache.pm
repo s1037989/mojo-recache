@@ -10,22 +10,25 @@ use Mojolicious::Commands;
 
 use B::Deparse;
 use Data::Structure::Util 'unbless';
-use Scalar::Util 'blessed';
+use Scalar::Util qw/blessed reftype/;
 use Storable ();
 
 use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
 
 has app => sub { scalar caller }, weak => 1;
+has as => undef;
 has cachedir => 'cache';
 has cron => 0; # MED: Is it possible to detect run by cron?
 has expires => 86_400 * 30;
-has home => sub { $_[0]->app->can('home') ? shift->app->home : Mojo::Home->new->detect('main') };
+has home => sub { Mojo::Home->new->detect(shift->app) };
 has log => sub { Mojo::Log->new };
 has minion => undef;
 has options => sub {
   my $cron = shift->cron;
   {attempts => 3, delay => $cron ? 0 : 3_600, queue => $cron ? 'cron' : 'recache'}
 };
+
+our $VERSION = '0.01';
 
 sub AUTOLOAD {
   my $self = shift;
@@ -95,7 +98,7 @@ sub retrieve {
   };
   return if $@;
   $self->emit(retrieved => $name);
-  return ref $data eq 'SCALAR' ? $$data : $data;
+  return $self->_as($data);
 }
 
 sub short { substr($_[1], 0, 6) }
@@ -130,12 +133,29 @@ sub store {
   };
   return if $@;
   $self->emit(stored => $name);
-  return $data;
+  return $self->_as($data);
 }
 
 sub use_options {
   my $self = shift;
   $self->new(options => {%{$self->options}, @_});
+}
+
+sub _as {
+  my ($self, $data) = @_;
+  return ref $data eq 'SCALAR' ? $$data : $data unless $self->as;
+  if ( reftype $self->as eq reftype $data ) {
+    if ( reftype $data eq 'ARRAY' ) {
+      return $self->as->new(@$data);
+    } elsif ( reftype $data eq 'HASH' ) {
+      return $self->as->new(%$data);
+    } elsif ( reftype $data eq 'SCALAR' ) {
+      return $self->as->new($$data);
+    } else {
+      die "Unsupported type";
+    }
+  }
+  die "Type mismatch";
 }
 
 sub _isa { blessed $_[0] && $_[0]->isa($_[1]) ? $_[0] : undef }
@@ -266,6 +286,16 @@ L<Mojo::Recache> implements the following attributes.
 
 Package, class, or object to provide caching for. Note that this attribute is
 weakened.
+
+=head2 as
+
+  my $as = $cache->as;
+  $cache = $cache->as(sub {...});
+
+Return cached data as an instance of an object.
+
+  $cache->as(sub { Mojo::Collection->new });
+  $cache->cacheable_thing->each(sub { say $_ });
 
 =head2 cachedir
 

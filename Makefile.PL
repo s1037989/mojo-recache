@@ -10,9 +10,9 @@ WriteMakefile(
         ABSTRACT_FROM => 'lib/Mojo/Recache.pm',
         PL_FILES      => {},
         PREREQ_PM     => {
-                'Mojolicius' => 0,
+                'Mojolicius' => 8.11,
                 'Storable' => 0,
-                'Minion' => 0,
+                'Minion' => 9.07,
                 'B::Deparse' => 0,
                 'Data::Structure::Util' => 0,
         },
