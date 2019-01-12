@@ -382,6 +382,12 @@ Cache the return value from the L</"app">'s subroutine. Return cached data
 without refreshing if the cache exists and has not expired. Enqueue a
 refreshing job if L<Minion> is enabled.
 
+=head2 enqueue
+
+  my $cache = $cache->enqueue($method => @args);
+
+If L<Minion> is enabled, use L<Minion> to enqueue a new job for task "$method".
+
 =head2 enqueued
 
   my $bool = $cache->enqueued($name);
