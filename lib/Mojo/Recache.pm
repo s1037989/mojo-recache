@@ -155,7 +155,8 @@ sub _as {
       die "Unsupported type";
     }
   }
-  die "Type mismatch";
+  local @_ = (reftype $self->as, reftype $data);
+  die "Type mismatch: @_";
 }
 
 sub _isa { blessed $_[0] && $_[0]->isa($_[1]) ? $_[0] : undef }
