@@ -4,7 +4,6 @@ use Mojo::Base 'Mojo::EventEmitter';
 use Minion;
 use Mojo::Home;
 use Mojo::JSON 'j';
-use Mojo::Log;
 use Mojo::Util qw/b64_decode b64_encode md5_sum/;
 use Mojolicious::Commands;
 
@@ -16,12 +15,11 @@ use Storable ();
 use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
 
 has app => sub { scalar caller }, weak => 1;
-has as => undef;
 has cachedir => 'cache';
 has cron => 0; # MED: Is it possible to detect run by cron?
 has expires => 86_400 * 30;
+has extra_args => sub { [] };
 has home => sub { Mojo::Home->new->detect(shift->app) };
-has log => sub { Mojo::Log->new };
 has minion => undef;
 has options => sub {
   my $cron = shift->cron;
@@ -80,7 +78,7 @@ sub merge_options {
 sub name {
   my ($self, $method) = (shift, shift);
   my $deparse = B::Deparse->new("-p", "-sC");
-  my $serialized = j([map { ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_) } $method, @_]);
+  my $serialized = j([map { ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_) } $method, @_, $self->extra_args]);
   my $name = md5_sum(b64_encode($serialized));
   warn sprintf "-- %s => %s (%s)\n", $method, $self->file($name), $serialized if DEBUG;
   return $name;
@@ -91,14 +89,16 @@ sub retrieve {
   my $file = $self->file($name);
   return unless -e $file;
   return if $self->expires && time - $file->stat->mtime > $self->expires;
-  my $data;
+  my ($data, @roles);
   eval {
     local $Storable::Eval = 1 || $Storable::Eval;
-    $data = Storable::retrieve($file);
+    ($data, @roles) = @{Storable::retrieve($file)};
+    blessed $data && @roles and $data = $data->with_roles(@roles);
   };
+  warn $@ if DEBUG;
   return if $@;
   $self->emit(retrieved => $name);
-  return $self->_as($data);
+  return $data;
 }
 
 sub short { substr($_[1], 0, 6) }
@@ -129,11 +129,26 @@ sub store {
   my $name = $self->name($method => @_);
   eval {
     local $Storable::Deparse = 1 || $Storable::Deparse;
-    Storable::store(ref $data ? $data : \$data, $self->file($name));
+    if ( blessed $data ) {
+      my $class = ref $data;
+      my ($base_class, $roles) = split /__WITH__/, $class;
+      my @roles = split /__AND__/, $roles;
+      if ( reftype $data eq 'ARRAY' ) {
+        Storable::store([$base_class->new(@$data), @roles], $self->file($name));
+      } elsif ( reftype $data eq 'HASH' ) {
+        Storable::store([$base_class->new(%$data), @roles], $self->file($name));
+      } elsif ( reftype $data eq 'SCALAR' ) {
+        Storable::store([$base_class->new($$data), @roles], $self->file($name));
+      } else {
+        die "Unsupported type";
+      }
+    } else {
+      Storable::store([$data], $self->file($name));
+    }
   };
   return if $@;
   $self->emit(stored => $name);
-  return $self->_as($data);
+  return $data;
 }
 
 sub use_options {
@@ -143,7 +158,7 @@ sub use_options {
 
 sub _as {
   my ($self, $data) = @_;
-  return ref $data eq 'SCALAR' ? $$data : $data unless $self->as;
+  return ref $data eq 'SCALAR' ? $$data : $data;# unless $self->as;
   if ( reftype $self->as eq reftype $data ) {
     if ( reftype $data eq 'ARRAY' ) {
       return $self->as->new(@$data);
@@ -288,16 +303,6 @@ L<Mojo::Recache> implements the following attributes.
 Package, class, or object to provide caching for. Note that this attribute is
 weakened.
 
-=head2 as
-
-  my $as = $cache->as;
-  $cache = $cache->as(sub {...});
-
-Return cached data as an instance of an object.
-
-  $cache->as(sub { Mojo::Collection->new });
-  $cache->cacheable_thing->each(sub { say $_ });
-
 =head2 cachedir
 
   my $cachedir = $cache->cachedir;
@@ -321,6 +326,13 @@ Instead of refreshing caches with a L<Minion> worker, use cron.
 When to consider a cachefile to be too old and force refreshing. Defaults to 30
 days.
 
+=head2 extra_args
+
+  my $array = $cache->extra_args;
+  $cache    = $cache->extra_args([]);
+
+Extra arguments for L</"name"> to generate a random filename.
+
 =head2 home
 
   my $home = $cache->home;
@@ -328,13 +340,6 @@ days.
 
 The parent of the directory where cache files are stored. Defaults to the same
 location as the main app.
-
-=head2 log
-
-  my $log = $cache->log;
-  $cache  = $cache->log(Mojo::Log->new);
-
-L<Mojo::Log> object used for logging.
 
 =head2 minion
 
@@ -423,7 +428,7 @@ factors.
   my $data = $cache->retrieve($name);
 
 Return the data from a cache file if it exists and has been modified within
-L</"expires"> seconds.
+L</"expires"> seconds. Reapply any roles to the recreated object instance.
 
 =head2 short
 
@@ -441,8 +446,9 @@ Return a shortened version of the cache name: the first 6 characters.
 
   $data = $cache->store($sub_name => @args);
 
-Run the specified subroutine from L</"app"> and stores it in L</"file"> after
-making sure that the return value is a reference.
+Run the specified subroutine from L</"app"> and store it in L</"file">,
+carefully retaining any applied roles to the object instance for
+reconstructing the data upon retrieval.
 
 =head2 use_options
 
