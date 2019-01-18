@@ -18,7 +18,6 @@ has app => sub { scalar caller }, weak => 1;
 has cachedir => 'cache';
 has cron => 0; # MED: Is it possible to detect run by cron?
 has expires => 86_400 * 30;
-has extra_args => sub { [] };
 has home => sub { Mojo::Home->new->detect(shift->app) };
 has minion => undef;
 has options => sub {
@@ -65,6 +64,12 @@ sub enqueued {
   return scalar grep { $_->{args}->[1] eq $name && ($self->cron ? $_->{queue} ne 'recache' : 1) } @$jobs;
 }
 
+sub expired {
+  my ($self, $file) = @_;
+  return ! -e $file;
+  return $self->expires && time - $file->stat->mtime > $self->expires
+}
+
 sub file {
   my $self = shift;
   return $self->home->child($self->cachedir)->make_path->child(shift);
@@ -78,17 +83,16 @@ sub merge_options {
 sub name {
   my ($self, $method) = (shift, shift);
   my $deparse = B::Deparse->new("-p", "-sC");
-  my $serialized = j([map { ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_) } $method, @_, $self->extra_args]);
+  my $serialized = j([map { ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_) } $method, @_, $self->app->can('extra_args') ? $self->app->extra_args->($self->app) : ()]);
   my $name = md5_sum(b64_encode($serialized));
-  warn sprintf "-- %s => %s (%s)\n", $method, $self->file($name), $serialized if DEBUG;
+  warn sprintf "-- %s => %s (%s) => %s\n", $method, $self->file($name), $self->expired($self->file($name)) ? 'expired' : 'cached', $serialized if DEBUG;
   return $name;
 }
 
 sub retrieve {
   my ($self, $name) = @_;
   my $file = $self->file($name);
-  return unless -e $file;
-  return if $self->expires && time - $file->stat->mtime > $self->expires;
+  return if $self->expired($file);
   my ($data, @roles);
   eval {
     local $Storable::Eval = 1 || $Storable::Eval;
@@ -125,7 +129,8 @@ sub start {
 
 sub store {
   my ($self, $method) = (shift, shift);
-  my $data = $self->app->$method(@_);
+  my $app = $self->app->can('cached') ? $self->app->cached(1) : $self->app;
+  my $data = $app->$method(@_);
   my $name = $self->name($method => @_);
   eval {
     local $Storable::Deparse = 1 || $Storable::Deparse;
@@ -192,6 +197,7 @@ Used in a module:
   use Mojo::Base -base;
   use Mojo::Recache;
   has cache => sub { Mojo::Recache->new };
+  has cached => 0;
   sub cacheable_thing {
     sleep 5;
     return time;
@@ -241,6 +247,10 @@ data is automatically refreshed using a L<Minion> worker or through a cron job.
 Tasks that are not yet cached will be executed in real-time and a copy of the
 task's return value will be stored in a local file for fast retrieval the next
 time.
+
+L<Mojo::Recache> caches any function from your provided L</"app"> and if there
+is an available attribute called "cached" it will set it to true so that
+L</"app">'s methods can know that they are being called in a cached context.
 
 =head1 EVENTS
 
@@ -303,6 +313,17 @@ L<Mojo::Recache> implements the following attributes.
 Package, class, or object to provide caching for. Note that this attribute is
 weakened.
 
+If L</"app"> has a "cached" boolean attribute, L</"store"> will set it to true
+just before calling the app method. This is useful for allowing an app method
+to handle it's own caching algorithm which is useful for updating the cache
+with small incremental fetches from the original source.
+
+If L</"app"> has an "extra_args" callback attribute, L</"name"> will pass the
+L</"app"> instance to it in order to grab some extra criteria for computing
+the name of the cache file. This is useful for allowing multiple separate
+cache files on the same method without having to provide the extra criteria
+on every call to the app method.
+
 =head2 cachedir
 
   my $cachedir = $cache->cachedir;
@@ -325,13 +346,6 @@ Instead of refreshing caches with a L<Minion> worker, use cron.
 
 When to consider a cachefile to be too old and force refreshing. Defaults to 30
 days.
-
-=head2 extra_args
-
-  my $array = $cache->extra_args;
-  $cache    = $cache->extra_args([]);
-
-Extra arguments for L</"name"> to generate a random filename.
 
 =head2 home
 
@@ -400,6 +414,12 @@ If L<Minion> is enabled, use L<Minion> to enqueue a new job for task "$method".
 
 If L<Minion> is enabled, check if a task "cache" for the provided cache name is
 enqueued.
+
+=head2 expired
+
+  my $bool = $cache->expired($file);
+
+Check if specified cache file is expired or not.
 
 =head2 file
 

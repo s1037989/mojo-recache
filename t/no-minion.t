@@ -68,6 +68,8 @@ ok $t7 - $t6 > 1, 'first cache';
 is $cache->def(1,2,'a',3)->digits->size, 3, 'with_roles: right second cache digits';
 my $t8 = time;
 ok $t8 - $t7 < 1, 'second cache';
+is $cache->expired($cache->file($cache->name('abc' => ()))), 0, 'not expired';
+# test also: cached and extra_args
 $cache->file('.')->dirname->remove_tree;
 
 done_testing;
