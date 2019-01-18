@@ -95,7 +95,7 @@ sub retrieve {
     ($data, @roles) = @{Storable::retrieve($file)};
     blessed $data && @roles and $data = $data->with_roles(@roles);
   };
-  warn $@ if DEBUG;
+  warn $@ if $@ && DEBUG;
   return if $@;
   $self->emit(retrieved => $name);
   return $data;
