@@ -45,8 +45,14 @@ sub enqueue {
   my $self = shift;
   my $minion = $self->minion or return;
   my $name = $self->name(@_);
+  my ($method, @method_args) = @_;
+  my $task = 'recache';
   $self->enqueued($name) or
-    $self->emit(enqueued => $minion->enqueue(recache => [shift() => $name => @_] => $self->options));
+    $self->emit(
+      enqueued => $minion->enqueue(
+        $task => [$method => $name => @method_args] => $self->options
+      )
+    );
   return $name;
 }
 
@@ -82,10 +88,26 @@ sub merge_options {
 
 sub name {
   my ($self, $method) = (shift, shift);
+
+  # If the app has an extra_args attribute, call it so that data can influence
+  # the name of the cache file
+  my @extra_args = $self->app->can('extra_args')
+                 ? $self->app->extra_args->($self->app)
+                 : ();
+
   my $deparse = B::Deparse->new("-p", "-sC");
-  my $serialized = j([map { ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_) } $method, @_, $self->app->can('extra_args') ? $self->app->extra_args->($self->app) : ()]);
+  my $serialized = j([
+    map {
+      ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_)
+    } $method, @_, @extra_args
+  ]);
   my $name = md5_sum(b64_encode($serialized));
-  warn sprintf "-- %s => %s (%s) => %s\n", $method, $self->file($name), $self->expired($self->file($name)) ? 'expired' : 'cached', $serialized if DEBUG;
+
+  DEBUG and warn sprintf "-- %s => %s (%s) => %s\n",
+         $method, $self->file($name),
+         $self->expired($self->file($name)) ? 'expired' : 'cached',
+         $serialized;
+
   return $name;
 }
 
@@ -121,7 +143,10 @@ sub start {
   });
 
   return $self unless @_;
-  Mojolicious::Commands->new(app => $self, namespaces => ['Minion::Command'])->run(@_);
+
+  Mojolicious::Commands
+    ->new(app => $self, namespaces => ['Minion::Command'])
+    ->run(@_);
 
   # LOW: exit with an appropriate exit code
   exit;
@@ -160,26 +185,6 @@ sub use_options {
   my $self = shift;
   $self->new(options => {%{$self->options}, @_});
 }
-
-sub _as {
-  my ($self, $data) = @_;
-  return ref $data eq 'SCALAR' ? $$data : $data;# unless $self->as;
-  if ( reftype $self->as eq reftype $data ) {
-    if ( reftype $data eq 'ARRAY' ) {
-      return $self->as->new(@$data);
-    } elsif ( reftype $data eq 'HASH' ) {
-      return $self->as->new(%$data);
-    } elsif ( reftype $data eq 'SCALAR' ) {
-      return $self->as->new($$data);
-    } else {
-      die "Unsupported type";
-    }
-  }
-  local @_ = (reftype $self->as, reftype $data);
-  die "Type mismatch: @_";
-}
-
-sub _isa { blessed $_[0] && $_[0]->isa($_[1]) ? $_[0] : undef }
 
 1;
 

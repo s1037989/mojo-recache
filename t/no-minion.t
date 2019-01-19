@@ -44,10 +44,10 @@ is $cache->options->{abc}, undef, 'temporary option gone';
 is $cache->merge_options(abc => 123)->options->{abc}, 123, 'right permanent option';
 is $cache->options->{abc}, 123, 'permanent option remained';
 my $name = $cache->name(abc => ());
-is $name, '56acc414dd5e5902916a1fda50e51fee', 'right name';
-is $cache->short($name), '56acc4', 'right short name';
+is $name, 'fd4f16df902fda892dadf2dd1bf40742', 'right name';
+is $cache->short($name), 'fd4f16', 'right short name';
 my $file = $cache->file($name);
-is $file->basename, '56acc414dd5e5902916a1fda50e51fee', 'right file';
+is $file->basename, 'fd4f16df902fda892dadf2dd1bf40742', 'right file';
 my $t1 = time;
 is $app->abc, 123, 'right no cache value';
 my $t2 = time;
@@ -68,7 +68,7 @@ ok $t7 - $t6 > 1, 'first cache';
 is $cache->def(1,2,'a',3)->digits->size, 3, 'with_roles: right second cache digits';
 my $t8 = time;
 ok $t8 - $t7 < 1, 'second cache';
-is $cache->expired($cache->file($cache->name('abc' => ()))), 0, 'not expired';
+ok !$cache->expired($cache->file($cache->name('abc' => ()))), 'not expired';
 # test also: cached and extra_args
 $cache->file('.')->dirname->remove_tree;
 
