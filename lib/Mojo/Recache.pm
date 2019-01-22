@@ -41,6 +41,11 @@ sub AUTOLOAD {
   return $self->store($method => @_);
 }
 
+sub clone {
+  my $self  = shift;
+  return $self->SUPER::new(%$self, @_);
+}
+
 sub enqueue {
   my $self = shift;
   my $minion = $self->minion or return;
@@ -406,6 +411,12 @@ If cron is enabled, defaults to "cron".
 Cache the return value from the L</"app">'s subroutine. Return cached data
 without refreshing if the cache exists and has not expired. Enqueue a
 refreshing job if L<Minion> is enabled.
+
+=head2 clone
+
+  my $cache = $cache->clone(expires => $seconds);
+
+Clone a L</"cache"> instance.
 
 =head2 enqueue
 
