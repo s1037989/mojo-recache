@@ -108,9 +108,10 @@ sub name {
   ]);
   my $name = md5_sum(b64_encode($serialized));
 
-  DEBUG and warn sprintf "-- %s => %s (%s) => %s\n",
+  DEBUG and warn sprintf "-- %s => %s (%s %s) => %s\n",
          $method, $self->file($name),
-         $self->expired($self->file($name)) ? 'expired' : 'cached',
+         $self->expired($self->file($name)) ? 'expired, >' : 'cached, <',
+         $self->expires,
          $serialized;
 
   return $name;
