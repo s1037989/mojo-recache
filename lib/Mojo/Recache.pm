@@ -72,7 +72,7 @@ sub enqueued {
 
 sub expired {
   my ($self, $file) = @_;
-  return ! -e $file;
+  return 1 if ! -e "$file";
   return $self->expires && time - $file->stat->mtime > $self->expires
 }
 
