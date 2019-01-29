@@ -32,7 +32,15 @@ use Mojo::File 'path';
 use Mojo::Recache;
 
 my $app = App->new;
-my $cache = Mojo::Recache->new(app => $app, home => path(__FILE__)->dirname);
+my $cache = Mojo::Recache->new(app => $app, cachedir => path(__FILE__)->sibling('cache'));
+my $hourly = $cache->queue('hourly');
+is $hourly->expires, 3_600, 'right hourly cache length';
+is $hourly->cachedir, 'hourly', 'right hourly cache name';
+my $long = $cache->length('long');
+is $long->expires, 86_400*30, 'right long cache length';
+is $long->cachedir, 'long', 'right long cache name';
+is $cache->expires, 86_400, 'right main cache length';
+is $cache->cachedir, 'cache', 'right main cache name';
 $cache->file('.')->dirname->remove_tree;
 $cache->on(retrieved => sub { is length(pop), 32, 'emitted right length received name' });
 $cache->on(stored => sub { is length(pop), 32, 'emitted right length stored name' });

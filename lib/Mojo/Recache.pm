@@ -12,18 +12,30 @@ use Data::Structure::Util 'unbless';
 use Scalar::Util qw/blessed reftype/;
 use Storable ();
 
-use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
+use constant CRON    => $ENV{MOJO_RECACHE_CRON} || 0;
+use constant DEBUG   => $ENV{MOJO_RECACHE_DEBUG} || 0;
+use constant DELAY   => 60;
+use constant EXPIRES => 86_400;
+use constant QUEUE   => 'default';
+use constant TASK    => 'recache';
 
 has app => sub { scalar caller }, weak => 1;
-has cachedir => 'cache';
-has cron => 0; # MED: Is it possible to detect run by cron?
-has expires => 86_400 * 30;
-has home => sub { Mojo::Home->new->detect(shift->app) };
+has cachedir => sub { Mojo::Home->new->detect(shift->app)->child(TASK) };
+has delay => 60;
 has minion => undef;
-has options => sub {
-  my $cron = shift->cron;
-  {attempts => 3, delay => $cron ? 0 : 3_600, queue => $cron ? 'cron' : 'recache'}
+has queues => sub {
+  {
+    once    => 0,
+    hourly  => 3_600,
+    daily   => 86_400,
+    weekly  => 86_400 * 7,
+    monthly => 86_400 * 30,
+    yearly  => 86_400 * 365,
+  }
 };
+has options => sub { {attempts => 3} };
+
+has _queue => QUEUE;
 
 our $VERSION = '0.01';
 
@@ -36,63 +48,108 @@ sub AUTOLOAD {
   # LOW: Do something nice like the above for the $method in app
 
   $self->enqueue($method => @_);
-  my $data = $self->retrieve($self->name($method => @_));
+  my $data = $self->retrieve([$method => @_]);
   return $data if $data;
   return $self->store($method => @_);
 }
 
 sub clone {
   my $self  = shift;
-  return $self->SUPER::new(%$self, @_);
+  return $self->SUPER::new({%$self, @_});
 }
 
 sub enqueue {
   my $self = shift;
   my $minion = $self->minion or return;
-  my $name = $self->name(@_);
-  my ($method, @method_args) = @_;
-  my $task = 'recache';
-  $self->enqueued($name) or
-    $self->emit(
-      enqueued => $minion->enqueue(
-        $task => [$method => $name => @method_args] => $self->options
-      )
-    );
-  return $name;
+  my $job = shift if ref $_[0];
+
+  return if $self->enqueued([@_]);
+
+  my $options = {
+    %{$self->options},
+    queue => $self->_queue || QUEUE,
+    delay => CRON ? 0 : $self->delay || DELAY,
+    map { $_ => $job->info->{$_} } $job ? qw/priority notes attempts parents/ : ()
+  };
+
+  return $self->emit(enqueued => $minion->enqueue(TASK, [@_], $options));
 }
 
 # HIGH: Doesn't re-enqueue because the job to re-enqueue is still active
 sub enqueued {
-  my ($self, $name) = (shift, shift);
+  my $self = shift;
+  my $name = $self->_want_name(@_);
   my $minion = $self->minion or return;
   my $jobs;
   my $limit = 1;
   do {
     # LOW: Is offset and limit required?
     #      If not, remove the loop.
-    $jobs = $minion->backend->list_jobs(0, $minion->backoff->($limit), {tasks => ['recache'], $self->cron ? () : (states => ['active', 'inactive', 'failed'], queues => [$self->options->{queue}])})->{jobs};
+    my $enqueued = {
+      tasks => [TASK],
+      states => ['active', 'inactive', 'failed'],
+      queues => [$self->queue],
+    };
+    $jobs = $minion->backend->list_jobs(
+      0, $minion->backoff->($limit), $enqueued
+    )->{jobs};
   } while ( @$jobs >= $minion->backoff->($limit++) );
-  return scalar grep { $_->{args}->[1] eq $name && ($self->cron ? $_->{queue} ne 'recache' : 1) } @$jobs;
+  return scalar grep { $self->name($_->{args}) eq $name } @$jobs;
 }
 
 sub expired {
-  my ($self, $file) = @_;
+  my $self = shift;
+  my $file = $self->_want_file(@_);
   return 1 if ! -e "$file";
-  return $self->expires && time - $file->stat->mtime > $self->expires
+  return $self->expires && time - $file->stat->mtime > $self->expires;
 }
+
+sub expires { $_[0]->queues->{$_[0]->_queue} || EXPIRES }
 
 sub file {
   my $self = shift;
-  return $self->home->child($self->cachedir)->make_path->child(shift);
+  my $name = $self->_want_name(@_);
+  return $self->cachedir->child($self->_queue)->make_path->child($name);
 }
 
-sub merge_options {
+sub name { md5_sum(b64_encode(shift->serialize(shift))) }
+
+sub queue {
+  my ($self, $queue) = @_;
+  return $self->_queue unless $queue && $self->queues->{$queue};
+  $self->clone(_queue => $queue);
+}
+
+sub remove {
   my $self = shift;
-  $self->options({%{$self->options}, @_});
+  return @_
+       ? $self->_want_file(@_)->remove
+       : $self->cachedir->child($self->_queue)->remove_tree;
 }
 
-sub name {
-  my ($self, $method) = (shift, shift);
+sub retrieve {
+  my $self = shift;
+  my $file = $self->_want_file(@_);
+  return if $self->expired($file);
+  my ($data, @roles, $name, $method, @args);
+  eval {
+    local $Storable::Eval = 1 || $Storable::Eval;
+    ($data, @roles, $name, $method, @args) = @{Storable::retrieve($file)};
+    blessed $data && @roles and $data = $data->with_roles(@roles);
+  };
+  warn $@ if $@ && DEBUG;
+  return if $@;
+  $self->emit(retrieved => $name, $method, @args);
+  DEBUG and warn sprintf "-- retrieved %s => %s (%s %s) => %s\n",
+         $method, $self->file($name),
+         $self->expired($name) ? 'expired, >' : 'cached, <',
+         $self->expires,
+         $self->serialized($method => @args);
+  return $data;
+}
+
+sub serialize {
+  my ($self, $method, @args) = (shift, ref $_[0] ? @{shift()} : @_);
 
   # If the app has an extra_args attribute, call it so that data can influence
   # the name of the cache file
@@ -101,55 +158,45 @@ sub name {
                  : ();
 
   my $deparse = B::Deparse->new("-p", "-sC");
-  my $serialized = j([
+  return j([
     map {
       ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_)
-    } $method, @_, @extra_args
+    } $method, @args, @extra_args
   ]);
-  my $name = md5_sum(b64_encode($serialized));
-
-  DEBUG and warn sprintf "-- %s => %s (%s %s) => %s\n",
-         $method, $self->file($name),
-         $self->expired($self->file($name)) ? 'expired, >' : 'cached, <',
-         $self->expires,
-         $serialized;
-
-  return $name;
-}
-
-sub retrieve {
-  my ($self, $name) = @_;
-  my $file = $self->file($name);
-  return if $self->expired($file);
-  my ($data, @roles);
-  eval {
-    local $Storable::Eval = 1 || $Storable::Eval;
-    ($data, @roles) = @{Storable::retrieve($file)};
-    blessed $data && @roles and $data = $data->with_roles(@roles);
-  };
-  warn $@ if $@ && DEBUG;
-  return if $@;
-  $self->emit(retrieved => $name);
-  return $data;
 }
 
 sub short { substr($_[1], 0, 6) }
 
 sub start {
   my $self = shift;
+  my $minion = $self->minion or return $self;
 
-  my $minion = $self->minion or return;
-
+  # HIGH: Can minion store just the name, and then get everything else it needs from Storable hash?
   $minion->add_task(recache => sub {
-    my ($job, $method, $name) = (shift, shift, shift);
+    my $job = shift;
+    my $name = $self->name(@_);
+    $job->info->{name} = $name;
+    my $recache = $self->queue($job->info->{queue});
     return $job->finish('Previous job is still active')
       unless my $guard = $minion->guard($name, 7200);
-    $self->store($method => @_);
-    $self->enqueue($method => @_);
+    $recache->store(@_) if $recache->expired($name);
+    $recache->enqueue($job, @_);
   });
+  return $self unless CRON;
 
-  return $self unless @_;
+  # To Document:
+  # Only retrieve honors "expires" -- retrieve will re-fetch of the content is expired
+  # Expires is otherwised only used for setting the delay for non-cron re-freshing
+  # If you want a job to run at an exact time, use cron
+  # If you only want something to refresh periodically, a worker is great
+  # Cron:
+  #   env CRON=1 
+  #   cron.weekly: ./myapp.pl minion worker -q weekly
+  #   cron.monthly: ./myapp.pl minion worker -q monthly
+  # Worker:
+  #   ./myapp.pl minion worker -q weekly,monthly
 
+  $self->emit('cron');
   Mojolicious::Commands
     ->new(app => $self, namespaces => ['Minion::Command'])
     ->run(@_);
@@ -159,37 +206,66 @@ sub start {
 }
 
 sub store {
-  my ($self, $method) = (shift, shift);
+  my $self = shift;
+  my $name = $self->name(@_);
+  my ($method, @args) = @_;
   my $app = $self->app->can('cached') ? $self->app->cached(1) : $self->app;
-  my $data = $app->$method(@_);
-  my $name = $self->name($method => @_);
+  my $data = $app->$method(@args);
+  my $store = {
+    name => $name,
+    method => $method,
+    args => [@args],
+  };
   eval {
     local $Storable::Deparse = 1 || $Storable::Deparse;
     if ( blessed $data ) {
       my $class = ref $data;
       my ($base_class, $roles) = split /__WITH__/, $class;
-      my @roles = split /__AND__/, $roles;
+      $store->{roles} = [split /__AND__/, $roles];
+      my @store;
       if ( reftype $data eq 'ARRAY' ) {
-        Storable::store([$base_class->new(@$data), @roles], $self->file($name));
+        $store->{data} = $base_class->new(@$data);
       } elsif ( reftype $data eq 'HASH' ) {
-        Storable::store([$base_class->new(%$data), @roles], $self->file($name));
+        $store->{data} = $base_class->new(%$data);
       } elsif ( reftype $data eq 'SCALAR' ) {
-        Storable::store([$base_class->new($$data), @roles], $self->file($name));
+        $store->{data} = $base_class->new($$data);
       } else {
         die "Unsupported type";
       }
     } else {
-      Storable::store([$data], $self->file($name));
+      $store->{data} = $data;
     }
+    Storable::store($store, $self->file($name));
   };
   return if $@;
-  $self->emit(stored => $name);
+  $self->emit(stored => $name, $method, @args);
+  DEBUG and warn sprintf "-- stored %s => %s (%s %s) => %s\n",
+         $method, $self->file($name),
+         $self->expired($name) ? 'expired, >' : 'cached, <',
+         $self->expires,
+         $self->serialized($method => @args);
   return $data;
 }
 
-sub use_options {
+sub touch {
   my $self = shift;
-  $self->new(options => {%{$self->options}, @_});
+  return @_
+       ? $self->_want_file(@_)->touch
+       : $self->cachedir->child($self->_queue)->each(sub{$_->touch});
+}
+
+sub _want_args { shift->_want(1 => @_) }
+sub _want_file { shift->_want(0 => @_) }
+sub _want_name { shift->_want(1 => @_) }
+sub _want {
+  my ($self, $want) = (shift, shift);
+  if ( !ref $_[0] ) {
+    return $want ? @_ : $self->file(shift);
+  } elsif ( ref $_[0] eq 'ARRAY' ) {
+    return $want ? $self->name(@{shift()}) : $self->file(@{shift()});
+  } elsif ( blessed $_[0] && $_[0]->isa('Mojo::File') ) {
+    return $want ? shift->basename : shift;
+  }
 }
 
 1;
@@ -268,6 +344,20 @@ L</"app">'s methods can know that they are being called in a cached context.
 L<Mojo::Recache> inherits all events from L<Mojo::EventEmitter> and can emit the
 following new ones.
 
+=head2 cron
+
+  $cache->on(cron => sub {
+    my ($cache) = @_;
+    ...
+  });
+
+Emitted after started by cron.
+
+  $cache->on(cron => sub {
+    my ($cache) = @_;
+    say "Recaching via cron";
+  });
+
 =head2 enqueued
 
   $cache->on(enqueued => sub {
@@ -283,18 +373,18 @@ enqueued it.
     say "Job $id has been enqueued.";
   });
 
-=head2 retreived
+=head2 retrieved
 
-  $cache->on(retreived => sub {
+  $cache->on(retrieved => sub {
     my ($cache, $name) = @_;
     ...
   });
 
 Emitted after retrieving data from a stored cache file.
 
-  $cache->on(retreived => sub {
+  $cache->on(retrieved => sub {
     my ($cache, $name) = @_;
-    say "Data from $name has been retreived.";
+    say "Data from $name has been retrieved.";
   });
 
 =head2 stored
@@ -365,6 +455,13 @@ days.
 
 The parent of the directory where cache files are stored. Defaults to the same
 location as the main app.
+
+=head2 length
+
+  my $lengths = $cache->lengths;
+  $cache      = $cache->lengths({});
+
+XXX
 
 =head2 minion
 
@@ -445,6 +542,12 @@ Check if specified cache file is expired or not.
 Return a L<Mojo::File> object for the specified cache file. The location is a
 child of L</"cachedir">, itself a child of L</"home">. The full directory path
 is created if it does not already exist.
+
+=head2 length
+
+  my $cache = $cache->length($name);
+
+XXXX
 
 =head2 merge_options
 
