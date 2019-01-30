@@ -4,7 +4,7 @@ use Mojo::Base -strict;
 use overload
   '@{}' => sub { ${$_[0]}->cache->data },
   '%{}' => sub { ${$_[0]}->cache->data },
-  '${}' => sub { ref $_[0] eq __PACKAGE__ ? $_[0] : ${$_[0]}->cache->data },
+  '${}' => sub { ((caller)[2]) == __LINE__ ? ${$_[0]}->cache->data : $_[0] },# if ((caller)[2]) == __LINE__; ${$_[0]}->cache->data },
   '""'  => sub { ${$_[0]}->cache->data },
   fallback => 1;
 

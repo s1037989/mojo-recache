@@ -5,7 +5,7 @@ use Mojo::Collection 'c';
 use Mojo::Recache;
 
 has cached  => 0;
-has recache => sub { Mojo::Recache->new(app => shift) };
+has recache => sub { warn $_[0]; Mojo::Recache->new(app => shift) };
 
 sub cacheable_thing {
   my ($self, $value) = (shift, shift);
@@ -29,6 +29,7 @@ sub cacheable_url { Mojo::URL->new(pop) }
 sub cacheable_array { ref $_[0] and shift; [@_] }
 sub cacheable_hash { ref $_[0] and shift; @_%2==0 ? {@_} : {id => @_} }
 sub cacheable_scalar { \pop }
+sub cacheable_noref { pop }
 
 # Full testing of all features on a main::sub() with an array-based collection
 # return value. This is the most purest form. It may not be the most common
@@ -64,7 +65,8 @@ eval { $$c->cache };
 ok $@, 'no cache defined yet';
 
 # Keep the recache repo clear for these tests
-$$c->recachedir->remove_tree if $$c->recachedir->basename eq 'recache';
+my $cleanup = Mojo::Recache->new;
+$$cleanup->recachedir->remove_tree if $$cleanup->recachedir->basename eq 'recache';
 
 # Mojo::Recache is a subclass of Mojo::EventEmitter and therefore emits some
 # events. The most common are stored and retrieved.
@@ -175,58 +177,140 @@ is $$c->cache->serialize, '["cacheable_c",[246,290],[]]', 'correct serialization
 # Ok, that was the in-depth overview of all of the functionality.
 # Now we return to simply testing the variations on it all.
 
-###########################################################################################
-$$c->recachedir->remove_tree if $$c->recachedir->basename eq 'recache'; done_testing; exit;
+# Make a new instance and set the refresh to daily
+my $daily = $c->new(refresh => 'daily');
+isa_ok $$daily, 'Mojo::Recache::Backend::Storable';
+is $$daily->refresh, 'daily', 'right refresh';
 
-my $def = $c->new(refresh => 'daily');
-is ref $$def, 'Mojo::Recache::Backend::Storable', 'right ref';
-is $$def->refresh, 'daily', 'right refresh';
-
+# All of the above was based on a data set of Mojo::Collection, which is a
+# blessed arrayref. Now let's look at other blessed ref types.
+# Here, a Mojo::ByteStream.
 my $b = Mojo::Recache->new();
-my $cb = $b->cacheable_b("246");
+my $bcb = $b->cacheable_b("246");
 is $b, 246, 'right value';
 is $$b->size, 3, 'right size';
 
 my $u = Mojo::Recache->new();
-my $cu = $u->cacheable_url("http://www.mojolicious.org");
-is $cu->scheme, 'http', 'right scheme';
+my $ucu = $u->cacheable_url("http://www.mojolicious.org");
+# Remember that $u is a Mojo::Recache object, and deref'ing it as the data
+# reftype stored in Mojo::Recache::Cache->data returns the data stored in
+# Mojo::Recache::Cache.
 is $u->{host}, 'www.mojolicious.org', 'right host';
-#is $b, 246, 'right value';
-#is $$b->size, 3, 'right size';
+# Remember that $u is a Mojo::Recache object, and deref'ing it as a scalar
+# returns the Mojo::Recache::Backend::X object which provides shortcuts to
+# the Mojo::Recache::Cache object.
+is $$u->scheme, 'http', 'right scheme';
+is $$u->data->scheme, 'http', 'right scheme';
+is $$u->cache->data->scheme, 'http', 'right scheme';
+# Remember that $ucu is the Mojo::Recache::Backend::X object which contains the
+# core Mojo::Recache'ing methods as well as the Mojo::Recache::Cache object
+# which contains the data, in this case a Mojo::URL object, as well as other
+# metadata about the cache.
+is $ucu->scheme, 'http', 'right scheme';
+is $ucu->data->scheme, 'http', 'right scheme';
+is $ucu->cache->data->scheme, 'http', 'right scheme';
 
-my $a = Mojo::Recache->new();
-my $ca = $a->cacheable_array(246);
-is $a->[0], 246, 'right array value';
-is $$a->data->[0], 246, 'right array value';
-is $ca->data->[0], 246, 'right array value';
-
-my $h = Mojo::Recache->new();
-my $ch = $h->cacheable_hash(246);
-is $h->{a}, 246, 'right hash value';
-is $$h->data->{a}, 246, 'right hash value';
-is $ch->data->{a}, 246, 'right hash value';
-#NO: diag $$ch;
-#is $h->{246}, 246, 'right hash value';
-
+# Caveat!
 my $s = Mojo::Recache->new();
-my $cs = $s->cacheable_scalar(246);
-is ${$$s->data}, 246, 'right scalar value';
+my $scs = $u->cacheable_scalar("http://www.mojolicious.org");
+# Sorry, no overload operators for scalars.  :(
+is ${$scs->cache->data}, 'http://www.mojolicious.org', 'right scalar data';
+# Otherwise still normal.
+is $$s->refresh, 'session', 'right refresh attribute value';
+TODO: {
+  local $TODO = 'abc';
+  eval { $s };
+  ok $@;
+  my $a = Mojo::Recache->new();
+  my $aca = $a->cacheable_array(246);
+  is $a->[0], 246, 'right array value';
+  is $$a->data->[0], 246, 'right array value';
+  is $aca->data->[0], 246, 'right array value';
 
+  my $h = Mojo::Recache->new();
+  my $hch = $h->cacheable_hash(246);
+  is $h->{a}, 246, 'right hash value';
+  is $$h->data->{a}, 246, 'right hash value';
+  is $hch->data->{a}, 246, 'right hash value';
+  #NO: diag $$ch;
+  #is $h->{246}, 246, 'right hash value';
+};
+
+my $n = Mojo::Recache->new();
+my $ncn = $n->cacheable_noref("http://www.mojolicious.org");
+# Here, it's a string operator overload, and it works well like normal.
+is $n, 'http://www.mojolicious.org', 'right non-ref string data';
+# Otherwise still normal.
+isa_ok $n, 'Mojo::Recache';
+isa_ok $$n, 'Mojo::Recache::Backend::Storable';
+is $$n->refresh, 'session', 'right refresh attribute value';
+isa_ok $ncn, 'Mojo::Recache::Backend::Storable';
+is $ncn->refresh, 'session', 'right refresh attribute value';
+
+# Likely the most common usage for Mojo::Recache is using it within another
+# module. You'll be able to use the module 100% like normal, but you'll
+# also be able to cache methods of the module by accessing it via the
+# Mojo::Recache instance, keeping access to the module method's data as
+# native and expected as possible.
 my $ss = Mojo::SomeService->new;
+# First, the obligatory non-cache interface for a control:
 is $ss->cacheable_thing(579)->first, 579, 'right value';
+# Ok, let's cache that method now!
 my $rct = $ss->recache->cacheable_thing(579);
+# Here's a cool feature: because you'rew calling the object method thru the
+# cache interface, the object method has the ability to know that it is
+# wanting to be cached and therefore it can behave differently.
+# Notice we passed 579, but the response, according to the method, is 580!
 is $ss->recache->[0], 580, 'caching';
+# Again, normal access mechanisms...
 is ${$ss->recache}->refresh, 'session', 'right refresh';
+isa_ok ${$ss->recache}->app, 'Mojo::SomeService';
+is $rct->refresh, 'session', 'right refresh';
+isa_ok $rct->app, 'Mojo::SomeService';
 is $rct->first, 580, 'caching...';
+# But this is great: thru the Mojo::Recache::Cache object, you have the ability
+# to know if you are dealing with cached data or not.
+# In this case, first access, the data that you're dealing with is _not_ from
+# a cache.
 is $rct->cache->cached, 0, 'not cached';
+# But call the method and arguments exactly again, and this time you can see
+# that you are dealing with _cached_ data!
 is $ss->recache->cacheable_thing(579)->cache->cached, 1, 'cached';
 
-my $ss1 = Mojo::SomeService->new->recache;
-is $$ss1->refresh, 'session', 'right refresh';
+# And, finally, maybe you want everything you do on this class instance to be
+# cached. You can do that, too:
+my $ss1 = Mojo::SomeService->new;
+is ${$ss1->recache}->refresh, 'session', 'right refresh';
+isa_ok ${$ss1->recache}->app, 'Mojo::SomeService';
+isa_ok $ss1->recache->cacheable_thing(579), 'Mojo::Recache::Backend::Storable';
+$ss1 = $ss1->recache;
+is $ss1->[0], 580, 'right first caching value';
+isa_ok $$ss1, 'Mojo::Recache::Backend::Storable';
+is $$ss1->first, 580, 'right first caching value';
+isa_ok $ss1->cacheable_thing(579), 'Mojo::Recache::Backend::Storable';
+is $ss1->[0], 580, 'right first caching value';
+isa_ok $$ss1, 'Mojo::Recache::Backend::Storable';
+is $$ss1->first, 580, 'right first caching value';
+diag $ss1->app;
 my $ss1ct = $ss1->cacheable_thing(579);
-is $ss1->[0], 580, 'correctly cached';
-is $ss1ct->data->[0], 580, 'right value';
-is $ss1ct->first, 580, 'right value';
+is $ss1ct->data->[0], 580, 'right first caching value';
+is $ss1ct->first, 580, 'right first caching value';
+isa_ok $ss1ct->data, 'Mojo::Collection';
+
+#is $ss1->first, 580, 'caching...';
+#is $$ss1->refresh, 'session', 'right refresh';
+#diag $$ss1->app;
+#diag $$ss1;
+#isa_ok $ss1->app, 'Mojo::SomeService';
+#$ss1 = $ss1->recache;
+# And, again, everything is normal.
+#is $$ss1->refresh, 'session', 'right refresh';
+#isa_ok $$ss1->app, 'Mojo::SomeService';
+#my $ss1ct = $ss1->cacheable_thing(579);
+#is $ss1->[0], 580, 'correctly cached';
+#is $ss1ct->data->[0], 580, 'right value';
+#is $ss1ct->first, 580, 'right value';
+
 #is $ss1->cacheable_thing(580)->first, 580, 'right value';
 #my $rct = $ss->recache->cacheable_thing(579);
 #is $ss->recache->[0], 580, 'caching';
@@ -235,4 +319,6 @@ is $ss1ct->first, 580, 'right value';
 #is $rct->cache->cached, 0, 'not cached';
 #is $ss->recache->cacheable_thing(579)->cache->cached, 1, 'cached';
 
+###########################################################################################
+$$cleanup->recachedir->remove_tree if $$cleanup->recachedir->basename eq 'recache';
 done_testing;

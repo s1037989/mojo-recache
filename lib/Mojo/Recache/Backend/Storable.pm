@@ -23,6 +23,7 @@ sub retrieve {
 sub store {
   my $self = shift;
   $self->enqueue;
+  return $self unless defined $self->app;
   my $app = $self->app->can('cached') ? $self->app->cached(1) : $self->app;
   my $method = $self->cache->method;
   $self->cache->data($app->$method(@{$self->cache->args}))->remove_roles;
