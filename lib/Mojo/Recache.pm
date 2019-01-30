@@ -4,6 +4,7 @@ use Mojo::Base -strict;
 use overload
   '@{}' => sub { ${$_[0]}->cache->data },
   '%{}' => sub { ${$_[0]}->cache->data },
+  '${}' => sub { ref $_[0] eq __PACKAGE__ ? $_[0] : ${$_[0]}->cache->data },
   '""'  => sub { ${$_[0]}->cache->data },
   fallback => 1;
 
@@ -69,9 +70,10 @@ sub _backend {
 
 sub _recachedir {
   my $app = shift;
+  return unless scalar caller eq __PACKAGE__;
   return $app && blessed $app && $app->can('home')
     ? $app->home
-    : Mojo::Home->new->detect($app);
+    : Mojo::Home->new->detect($app||scalar caller);
 }
 
 1;
