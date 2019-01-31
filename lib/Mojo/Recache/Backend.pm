@@ -12,7 +12,9 @@ use constant DEBUG    => $ENV{MOJO_RECACHE_DEBUG}   || 0;
 use constant REFRESH  => $ENV{MOJO_RECACHE_REFRESH} || 'session';
 use constant EXPIRES  => $ENV{MOJO_RECACHE_EXPIRES} || undef;
 
+# This attribute exists solely for the purpose of Mojo::Recache
 has app        => sub { scalar caller }, weak => 1;
+
 has cache      => sub { die };
 has delay      => 60;
 has expires    => sub {

@@ -5,7 +5,7 @@ use Mojo::Collection 'c';
 use Mojo::Recache;
 
 has cached  => 0;
-has recache => sub { warn $_[0]; Mojo::Recache->new(app => shift) };
+has recache => sub { Mojo::Recache->new(app => shift) };
 
 sub cacheable_thing {
   my ($self, $value) = (shift, shift);
@@ -219,7 +219,7 @@ is ${$scs->cache->data}, 'http://www.mojolicious.org', 'right scalar data';
 is $$s->refresh, 'session', 'right refresh attribute value';
 TODO: {
   local $TODO = 'abc';
-  eval { $s };
+  eval { return $s };
   ok $@;
   my $a = Mojo::Recache->new();
   my $aca = $a->cacheable_array(246);
@@ -291,33 +291,29 @@ isa_ok $ss1->cacheable_thing(579), 'Mojo::Recache::Backend::Storable';
 is $ss1->[0], 580, 'right first caching value';
 isa_ok $$ss1, 'Mojo::Recache::Backend::Storable';
 is $$ss1->first, 580, 'right first caching value';
-diag $ss1->app;
+#isa_ok $ss1->app, 'Mojo::SomeService'; # because of weaken!
 my $ss1ct = $ss1->cacheable_thing(579);
 is $ss1ct->data->[0], 580, 'right first caching value';
 is $ss1ct->first, 580, 'right first caching value';
 isa_ok $ss1ct->data, 'Mojo::Collection';
 
-#is $ss1->first, 580, 'caching...';
-#is $$ss1->refresh, 'session', 'right refresh';
-#diag $$ss1->app;
-#diag $$ss1;
-#isa_ok $ss1->app, 'Mojo::SomeService';
-#$ss1 = $ss1->recache;
-# And, again, everything is normal.
-#is $$ss1->refresh, 'session', 'right refresh';
-#isa_ok $$ss1->app, 'Mojo::SomeService';
-#my $ss1ct = $ss1->cacheable_thing(579);
-#is $ss1->[0], 580, 'correctly cached';
-#is $ss1ct->data->[0], 580, 'right value';
-#is $ss1ct->first, 580, 'right value';
-
-#is $ss1->cacheable_thing(580)->first, 580, 'right value';
-#my $rct = $ss->recache->cacheable_thing(579);
-#is $ss->recache->[0], 580, 'caching';
-#diag ${$ss->recache}->refresh;
-#is $rct->first, 580, 'caching...';
-#is $rct->cache->cached, 0, 'not cached';
-#is $ss->recache->cacheable_thing(579)->cache->cached, 1, 'cached';
+# This is probably what you want
+# There is no access to the weakened app attribute in Mojo::Recache::Backend
+my $mssr = Mojo::SomeService->new->recache;
+my $mssrct = $mssr->cacheable_thing(579);
+isa_ok $$mssr, 'Mojo::Recache::Backend::Storable';
+ok !$mssr->_recachedir, 'no response expected';
+is $mssr->[0], 580, 'right first caching value';
+is $$mssr->first, 580, 'right first caching value';
+is $$mssr->cache->data->first, 580, 'right first caching value';
+is $$mssr->cache->data->[0], 580, 'right first caching value';
+is $mssrct->first, 580, 'right first caching value';
+is $mssrct->cache->data->first, 580, 'right first caching value';
+is $mssrct->cache->data->[0], 580, 'right first caching value';
+is $mssrct->refresh, 'session', 'right refresh';
+is $mssrct->delay, 60, 'right delay';
+is $mssrct->cache->method, 'cacheable_thing', 'right method';
+is $mssrct->cache->args->[0], 579, 'right first arg';
 
 ###########################################################################################
 $$cleanup->recachedir->remove_tree if $$cleanup->recachedir->basename eq 'recache';
