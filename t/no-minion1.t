@@ -26,8 +26,8 @@ sub cacheable_b { b(pop) }
 sub cacheable_c { ref $_[0] || $_[0] eq __PACKAGE__ and shift; c(@_) }
 sub cacheable_path { path(pop) }
 sub cacheable_url { Mojo::URL->new(pop) }
-sub cacheable_array { ref $_[0] and shift; [@_] }
-sub cacheable_hash { ref $_[0] and shift; @_%2==0 ? {@_} : {id => @_} }
+sub cacheable_array { ref $_[0] || $_[0] eq __PACKAGE__ and shift; [@_] }
+sub cacheable_hash { ref $_[0] || $_[0] eq __PACKAGE__ and shift; @_%2==0 ? {@_} : {id => @_} }
 sub cacheable_scalar { \pop }
 sub cacheable_noref { pop }
 
@@ -218,24 +218,30 @@ is ${$scs->cache->data}, 'http://www.mojolicious.org', 'right scalar data';
 # Otherwise still normal.
 is $$s->refresh, 'session', 'right refresh attribute value';
 TODO: {
-  local $TODO = 'abc';
+  local $TODO = 'Is there any way to overload the scalar operator?';
   eval { return $s };
   ok $@;
-  my $a = Mojo::Recache->new();
-  my $aca = $a->cacheable_array(246);
-  is $a->[0], 246, 'right array value';
-  is $$a->data->[0], 246, 'right array value';
-  is $aca->data->[0], 246, 'right array value';
-
-  my $h = Mojo::Recache->new();
-  my $hch = $h->cacheable_hash(246);
-  is $h->{a}, 246, 'right hash value';
-  is $$h->data->{a}, 246, 'right hash value';
-  is $hch->data->{a}, 246, 'right hash value';
-  #NO: diag $$ch;
-  #is $h->{246}, 246, 'right hash value';
 };
 
+# Aside from the caveat, all works as expected
+# functions / methods that return arrays...
+my $a = Mojo::Recache->new();
+my $aca = $a->cacheable_array(246);
+is $a->[0], 246, 'right array value';
+is $$a->data->[0], 246, 'right array value';
+is $aca->data->[0], 246, 'right array value';
+
+# functions / methods that return hashes...
+my $h = Mojo::Recache->new();
+my $hch = $h->cacheable_hash(246);
+is $h->{id}, 246, 'right hash value';
+is $$h->data->{id}, 246, 'right hash value';
+is $hch->data->{id}, 246, 'right hash value';
+# There's no methods to call on data because data isn't an object.
+# But we can still inspect the metadata:
+is $hch->cache->method, 'cacheable_hash', 'right metadata value';
+
+# functions / methods that return strings...
 my $n = Mojo::Recache->new();
 my $ncn = $n->cacheable_noref("http://www.mojolicious.org");
 # Here, it's a string operator overload, and it works well like normal.
