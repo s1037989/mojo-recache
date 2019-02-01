@@ -1,8 +1,12 @@
 package Mojo::SomeService;
 use Mojo::Base -base;
 
+use Mojo::ByteStream 'b';
 use Mojo::Collection 'c';
+use Mojo::File 'path';
 use Mojo::Recache;
+use Mojo::URL;
+use Mojo::Util 'dumper';
 
 has cached  => 0;
 has recache => sub { Mojo::Recache->new(app => shift) };
@@ -11,6 +15,15 @@ sub cacheable_thing {
   my ($self, $value) = (shift, shift);
   c($self->cached ? $value + 1 : $value);
 }
+
+sub cacheable_b { b(pop) }
+sub cacheable_c { ref $_[0] || $_[0] eq __PACKAGE__ and shift; c(@_) }
+sub cacheable_path { path(@_>1?pop:()) }
+sub cacheable_url { Mojo::URL->new(pop) }
+sub cacheable_array { ref $_[0] || $_[0] eq __PACKAGE__ and shift; [@_] }
+sub cacheable_hash { ref $_[0] || $_[0] eq __PACKAGE__ and shift; @_%2==0 ? {@_} : {id => @_} }
+sub cacheable_scalar { \pop }
+sub cacheable_noref { pop }
 
 package main;
 use Test::More;
@@ -61,8 +74,9 @@ isa_ok $$c->recachedir, 'Mojo::File';
 is $$c->recachedir->basename, 'recache', 'right default cachedir name';
 is $$c->refresh, 'session', 'right default refresh';
 is $$c->app, __PACKAGE__, 'right app package';
-eval { $$c->cache };
-ok $@, 'no cache defined yet';
+#eval { $$c->cache };
+#ok $@, 'no cache defined yet';
+ok !$$c->cache, 'no cache defined yet';
 
 # Keep the recache repo clear for these tests
 my $cleanup = Mojo::Recache->new;
@@ -72,8 +86,8 @@ $$cleanup->recachedir->remove_tree if $$cleanup->recachedir->basename eq 'recach
 # events. The most common are stored and retrieved.
 # These won't do anything until stored or retrieved are called and are given
 # the opportunity to emit the respective event.
-$$c->on(stored => sub { ok shift->cache->name =~ /^[0-9a-f]{32}$/, 'got stored event with cache object for detail inspection' });
-$$c->on(retrieved => sub { ok shift->cache->name =~ /^[0-9a-f]{32}$/, 'got retrieved event with cache object for detail inspection' });
+$$c->once(stored => sub { ok shift->cache->name =~ /^[0-9a-f]{32}$/, 'got stored event with cache object for detail inspection' });
+$$c->once(retrieved => sub { ok shift->cache->name =~ /^[0-9a-f]{32}$/, 'got retrieved event with cache object for detail inspection' });
 
 # Time to start caching things.
 # The Mojo::Recache instance is pretty much good for one thing:
@@ -286,26 +300,26 @@ is $ss->recache->cacheable_thing(579)->cache->cached, 1, 'cached';
 # And, finally, maybe you want everything you do on this class instance to be
 # cached. You can do that, too:
 my $ss1 = Mojo::SomeService->new;
-is ${$ss1->recache}->refresh, 'session', 'right refresh';
-isa_ok ${$ss1->recache}->app, 'Mojo::SomeService';
+my $ss1r = $ss1->recache;
+is $$ss1r->refresh, 'session', 'right refresh';
+isa_ok $$ss1r->app, 'Mojo::SomeService';
 isa_ok $ss1->recache->cacheable_thing(579), 'Mojo::Recache::Backend::Storable';
-$ss1 = $ss1->recache;
-is $ss1->[0], 580, 'right first caching value';
-isa_ok $$ss1, 'Mojo::Recache::Backend::Storable';
-is $$ss1->first, 580, 'right first caching value';
-isa_ok $ss1->cacheable_thing(579), 'Mojo::Recache::Backend::Storable';
-is $ss1->[0], 580, 'right first caching value';
-isa_ok $$ss1, 'Mojo::Recache::Backend::Storable';
-is $$ss1->first, 580, 'right first caching value';
-#isa_ok $ss1->app, 'Mojo::SomeService'; # because of weaken!
-my $ss1ct = $ss1->cacheable_thing(579);
-is $ss1ct->data->[0], 580, 'right first caching value';
-is $ss1ct->first, 580, 'right first caching value';
-isa_ok $ss1ct->data, 'Mojo::Collection';
+is $ss1r->[0], 580, 'right first caching value';
+isa_ok $$ss1r, 'Mojo::Recache::Backend::Storable';
+is $$ss1r->first, 580, 'right first caching value';
+isa_ok $$ss1r->app, 'Mojo::SomeService';
+isa_ok $ss1r->cacheable_thing(579), 'Mojo::Recache::Backend::Storable';
+is $ss1r->[0], 580, 'right first caching value';
+isa_ok $$ss1r, 'Mojo::Recache::Backend::Storable';
+is $$ss1r->first, 580, 'right first caching value';
+my $ss1rct = $ss1r->cacheable_thing(579);
+is $ss1rct->data->[0], 580, 'right first caching value';
+is $ss1rct->first, 580, 'right first caching value';
+isa_ok $ss1rct->data, 'Mojo::Collection';
 
 # This is probably what you want
-# There is no access to the weakened app attribute in Mojo::Recache::Backend
 my $mssr = Mojo::SomeService->new->recache;
+isa_ok $$mssr->app, 'Mojo::SomeService';
 my $mssrct = $mssr->cacheable_thing(579);
 isa_ok $$mssr, 'Mojo::Recache::Backend::Storable';
 ok !$mssr->_recachedir, 'no response expected';
@@ -313,6 +327,10 @@ is $mssr->[0], 580, 'right first caching value';
 is $$mssr->first, 580, 'right first caching value';
 is $$mssr->cache->data->first, 580, 'right first caching value';
 is $$mssr->cache->data->[0], 580, 'right first caching value';
+is $$mssr->refresh, 'session', 'right refresh';
+is $$mssr->delay, 60, 'right delay';
+is $$mssr->cache->method, 'cacheable_thing', 'right method';
+is $$mssr->cache->args->[0], 579, 'right first arg';
 is $mssrct->first, 580, 'right first caching value';
 is $mssrct->cache->data->first, 580, 'right first caching value';
 is $mssrct->cache->data->[0], 580, 'right first caching value';
@@ -320,6 +338,39 @@ is $mssrct->refresh, 'session', 'right refresh';
 is $mssrct->delay, 60, 'right delay';
 is $mssrct->cache->method, 'cacheable_thing', 'right method';
 is $mssrct->cache->args->[0], 579, 'right first arg';
+is $mssr->cacheable_thing(479)->first, 480, 'right cached-version value';
+is $mssr->[0], 480, 'right shortcut cached-version value';
+is $mssr->cacheable_c(101)->first, 101, 'right first collection value';
+is $mssr->[0], 101, 'right shortcut first collection value';
+is $mssr->cacheable_b(102)->size, 3, 'right bytestream size';
+is $mssr, 102, 'right shortcut bytestream size';
+ok -d $mssr->cacheable_path->data, 'is a directory';
+is $mssr->cacheable_path('.')->to_string, '.', 'right path';
+is $mssr, '.', 'right shortcut path';
+is $mssr->cacheable_url('http://www.mojolicious.org')->scheme, 'http', 'right url scheme';
+is $mssr, 'http://www.mojolicious.org', 'right shortcut url scheme';
+is $mssr->cacheable_array(103)->data->[0], 103, 'right first array value';
+is $mssr->[0], 103, 'right shortcut first array value';
+is $mssr->cacheable_hash(104)->data->{id}, 104, 'right id hash value';
+is $mssr->{id}, 104, 'right shortcut id hash value';
+is ${$mssr->cacheable_scalar(105)->data}, 105, 'right scalar value';
+isnt $$mssr, 105, 'no shortcut scalar value available';
+is $mssr->cacheable_noref(106)->data, 106, 'right string value';
+is $mssr, 106, 'right shortcut string value';
+is $mssr->cacheable_c(101)->first, 101, 'right first collection value';
+ok $$mssr->cache->cached, 'cached';
+
+# Now, take a look at this, be careful...
+my $mssrcc101 = $mssr->cacheable_c(101);
+ok $mssrcc101->cache->cached, 'cached';
+my $mssrcc102 = $mssr->cacheable_c(102);
+ok !$mssrcc102->cache->cached, 'not cached';
+my $mssrcc102a = $mssr->cacheable_c(102);
+ok $mssrcc102a->cache->cached, 'cached';
+my $mssrcc103 = $mssr->cacheable_c(103);
+is $mssrcc103->cache->data->[0], 103, 'as you expected';
+isnt $mssrcc102a->cache->data->[0], 102, 'not what you expected'; # mssrcc102a ISNT 102!
+is $mssrcc103->cache->data->[0], 103, 'as you expected';
 
 ###########################################################################################
 $$cleanup->recachedir->remove_tree if $$cleanup->recachedir->basename eq 'recache';
