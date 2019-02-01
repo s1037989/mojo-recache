@@ -361,16 +361,52 @@ is $mssr->cacheable_c(101)->first, 101, 'right first collection value';
 ok $$mssr->cache->cached, 'cached';
 
 # Now, take a look at this, be careful...
-my $mssrcc101 = $mssr->cacheable_c(101);
-ok $mssrcc101->cache->cached, 'cached';
-my $mssrcc102 = $mssr->cacheable_c(102);
-ok !$mssrcc102->cache->cached, 'not cached';
-my $mssrcc102a = $mssr->cacheable_c(102);
-ok $mssrcc102a->cache->cached, 'cached';
-my $mssrcc103 = $mssr->cacheable_c(103);
-is $mssrcc103->cache->data->[0], 103, 'as you expected';
-isnt $mssrcc102a->cache->data->[0], 102, 'not what you expected'; # mssrcc102a ISNT 102!
-is $mssrcc103->cache->data->[0], 103, 'as you expected';
+# You might want to do something like this:
+my $mssrcC101 = $mssr->cacheable_c(101);
+ok $mssrcC101->cache->cached, 'cached';
+my $mssrcC102 = $mssr->cacheable_c(102);
+ok !$mssrcC102->cache->cached, 'not cached';
+my $mssrcC102a = $mssr->cacheable_c(102);
+ok $mssrcC102a->cache->cached, 'cached';
+my $mssrcC103 = $mssr->cacheable_c(103);
+is $mssrcC103->cache->data->[0], 103, 'as you expected';
+isnt $mssrcC102a->cache->data->[0], 102, 'not as you expected'; # This is not what you expected!
+is $mssrcC103->cache->data->[0], 103, 'as you expected';
+
+# What you actually wanted to do this:
+my $mssrcc101 = $mssr->cacheable_c(101)->cache;
+ok $mssrcc101->cached, 'cached';
+ok -f $$mssr->cache($mssrcc101)->file, 'file exists';
+my $mssrcc202 = $mssr->cacheable_c(202)->cache;
+ok !$mssrcc202->cached, 'not cached';
+ok -f $$mssr->cache($mssrcc202)->file, 'file exists';
+my $mssrcc202a = $mssr->cacheable_c(202)->cache;
+ok $mssrcc202a->cached, 'cached';
+ok -f $$mssr->cache($mssrcc202a)->file, 'file exists';
+my $mssrcc203 = $mssr->cacheable_c(203)->cache;
+is $mssrcc203->data->[0], 203, 'as you expected';
+ok -f $$mssr->cache($mssrcc203)->file, 'file exists';
+is $mssrcc202a->data->[0], 202, 'as you expected';
+ok -f $$mssr->cache($mssrcc202)->file, 'file exists';
+is $mssrcc203->data->[0], 203, 'as you expected';
+ok -f $$mssr->cache($mssrcc203)->file, 'file exists';
+# Remember that the AUTOLOAD method returns the Mojo::Recache::Backend::X
+# instance. Mojo::Recache::Backend is just a module, it's not an instance.
+# It operates on whatever instance is in its cache attribute.
+# Each call to AUTOLOAD updates cache so any call to Backend after that
+# works on that most recent cache instance.
+
+# So another way of doing the not what you expected above is this:
+$mssr->cacheable_c(101);
+ok $$mssr->cache->cached, 'not cached';
+$mssr->cacheable_c(302);
+ok !$$mssr->cache->cached, 'not cached';
+$mssr->cacheable_c(302);
+ok $$mssr->cache->cached, 'cached';
+$mssr->cacheable_c(303);
+is $$mssr->cache->data->[0], 303, 'as you expected';
+isnt $$mssr->cache->data->[0], 302, 'as you expected';
+is $$mssr->cache->data->[0], 303, 'as you expected';
 
 ###########################################################################################
 $$cleanup->recachedir->remove_tree if $$cleanup->recachedir->basename eq 'recache';

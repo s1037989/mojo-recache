@@ -29,7 +29,6 @@ sub AUTOLOAD {
     unless blessed $self && $self->isa(__PACKAGE__);
 
   $$self->cache(Mojo::Recache::Cache->new(method => $method, args => [@_]));
-#warn $$self->app if $method eq 'cacheable_thing';
   $$self->retrieve or $$self->store;
   return $$self;
 }

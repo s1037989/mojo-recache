@@ -11,6 +11,7 @@ use Scalar::Util 'blessed';
 use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
 
 has args    => sub { [] };
+has recache => sub { die }, weak => 1;
 has cached  => 0;
 has data    => undef;
 has method  => sub { die };
