@@ -45,16 +45,21 @@ sub AUTOLOAD {
 
 sub data { shift->cache->data }
 
-sub DESTORY {
+sub DESTROY {
   my $self = shift;
-  return unless $self->refresh eq 'session';
+  return unless defined $self->expires->{$self->refresh};
   DEBUG and warn sprintf '-- removing cache %s', $self->file;
 }
 
 sub enqueue {
+  my $self = shift;
+  $self->emit('enqueue');
+  return $self;
 }
 
 sub enqueued {
+  my $self = shift;
+  return 0;
 }
 
 sub expire { shift->remove }
@@ -71,13 +76,21 @@ sub file {
   $self->recachedir->make_path->child($self->cache->name);
 }
 
-sub remove { shift->file->remove }
+sub remove {
+  my $self = shift;
+  $self->file->remove;
+  $self->emit('removed');
+}
 
 sub retrieve { croak 'Method "retrieve" not implemented by subclass' }
 
 sub store { croak 'Method "store" not implemented by subclass' }
 
-sub touch { shift->file->touch }
+sub touch {
+  my $self = shift;
+  $self->file->touch;
+  $self->emit('touched');
+}
 
 1;
 
@@ -85,119 +98,58 @@ sub touch { shift->file->touch }
 
 =head1 NAME 
 
-Mojo::Recache - Provide caching and automatic refreshing for your app
+Mojo::Recache::Backend - Backend base class
 
 =head1 SYNOPSIS
 
-Used in a module:
+  package Mojo::Recache::Backend::MyBackend;
+  use Mojo::Base 'Mojo::Recache::Backend';
 
-  package Abc;
-  use Mojo::Base -base;
-  use Mojo::Recache;
-  has cache => sub { Mojo::Recache->new };
-  sub cacheable_thing {
-    sleep 5;
-    return time;
-  }
-
-  package main;
-  use Abc;
-  my $abc = Abc->new;
-  warn $abc->cache->cacheable_thing;
-  warn $abc->cache->cacheable_thing;
-
-Used in a main app:
-
-  use Mojo::Recache;
-  sub cacheable_thing {
-    sleep 5;
-    return time;
-  }
-  my $cache = Mojo::Recache->new;
-  warn $cache->cacheable_thing;
-  warn $cache->cacheable_thing;
-
-Used in a Mojolicious::Lite app:
-
-  use Mojolicious::Lite;
-  helper cache => sub { Mojo::Recache->new(expires => 3600, app => shift) };
-  helper cacheable_think => sub { sleep 5; return time; };
-  get '/' => sub { $_[0]->render(text => $_[0]->cache->cacheable_thing) };
-  app->start;
-
-Refreshed with a minion worker (takes the same arguments as
-L<Minion::Command::worker>:
-
-  $cache->start('worker', '-q', 'cache');
-
-Refreshed with a cron job (takes the same arguments as
-L<Minion::Command::job>:
-
-  $cache->start('job', '-q', 'monthly');
+  sub retrieve {...}
+  sub store    {...}
 
 =head1 DESCRIPTION
 
-L<Mojo::Recache> provides caching and automatic refreshing for your app. It
-caches return values from subroutines and stores them with L<Storable>. Stored
-data is automatically refreshed using a L<Minion> worker or through a cron job.
-
-Tasks that are not yet cached will be executed in real-time and a copy of the
-task's return value will be stored in a local file for fast retrieval the next
-time.
+L<Mojo::Recache::Backend> is an abstract base class for L<Mojo::Recache>
+backends, like L<Mojo::Recache::Backend::Storable>.
 
 =head1 EVENTS
 
 L<Mojo::Recache> inherits all events from L<Mojo::EventEmitter> and can emit the
 following new ones.
 
-=head2 enqueued
+=head2 removed
 
-  $cache->on(enqueued => sub {
-    my ($cache, $id) = @_;
+  $backend->on(removed => sub {
+    my $backend = shift;
     ...
   });
 
-Emitted after a cache auto-refresh job has been enqueued, in the process that
-enqueued it.
+Emitted after a cache deposit has been removed.
 
-  $cache->on(enqueued => sub {
-    my ($cache, $id) = @_;
-    say "Job $id has been enqueued.";
+  $backend->on(removed => sub {
+    my $name = shift->cache->name;
+    say "Cache $name has been removed.";
   });
 
-=head2 retreived
+=head2 touched
 
-  $cache->on(retreived => sub {
-    my ($cache, $name) = @_;
+  $backend->on(touched => sub {
+    my $backend = shift;
     ...
   });
 
-Emitted after retrieving data from a stored cache file.
+Emitted after a cache deposit has been artifically refreshed.
 
-  $cache->on(retreived => sub {
-    my ($cache, $name) = @_;
-    say "Data from $name has been retreived.";
-  });
-
-=head2 stored
-
-  $cache->on(stored => sub {
-    my ($cache, $name) = @_;
-    ...
-  });
-
-Emitted after executing the named subroutine from L</"app"> and storing in a
-local cache file.
-
-  $cache->on(stored => sub {
-    my ($cache, $name) = @_;
-    say "Data for $name has been stored.";
+  $backend->on(touched => sub {
+    my $name = shift->cache->name;
+    say "Cache $name has been touched.";
   });
 
 =head1 ENVIRONMENT
 
-The behavior of L<Mojo::Recache::Backend::Storable> can be controlled through
-the use of the following environment variables.
+The behavior of L<Mojo::Recache::Backend> can be controlled through the use of
+the following environment variables.
 
 =head2 MOJO_RECACHE_DEBUG
 
@@ -223,7 +175,7 @@ L<Mojo::Recache> implements the following attributes.
 Package, class, or object to provide caching for. Note that this attribute is
 weakened.
 
-=head2 cachedir
+=head2 cache
 
   my $cachedir = $cache->cachedir;
   $cache       = $cache->cachedir($dirname);
@@ -231,7 +183,7 @@ weakened.
 Child directory of L</"home"> where cache files are stored and retrieved.
 Defaults to 'cache'.
 
-=head2 cron
+=head2 delay
 
   my $bool = $cache->cron;
   $cache   = $cache->cron($bool);
@@ -241,25 +193,16 @@ Instead of refreshing caches with a L<Minion> worker, use cron.
 =head2 expires
 
   my $expires = $cache->expires;
-  $cache      = $cache->expires($seconds);
+  $cache      = $cache->expires($hash);
 
-When to consider a cachefile to be too old and force refreshing. Defaults to 30
-days.
+A hash reference of named L</"refresh"> policies and the amount of seconds
+after last modified in which the cache expires. The default policies are
+session, once, hourly, daily, weekly, monthly, and yearly.
 
-=head2 extra_args
+An undefined refresh policy (session) removes the cache when the
+L<Mojo::Recache::Backend> instance is destroyed.
 
-  my $array = $cache->extra_args;
-  $cache    = $cache->extra_args([]);
-
-Extra arguments for L</"name"> to generate a random filename.
-
-=head2 home
-
-  my $home = $cache->home;
-  $cache   = $cache->home(Mojo::Home->new);
-
-The parent of the directory where cache files are stored. Defaults to the same
-location as the main app.
+A refresh policy of 0 seconds is never expired.
 
 =head2 minion
 
@@ -295,6 +238,21 @@ If cron is enabled, defaults to "cron".
 
 =back
 
+=head2 recachedir
+
+  my $home = $cache->home;
+  $cache   = $cache->home(Mojo::Home->new);
+
+The parent of the directory where cache files are stored. Defaults to the same
+location as the main app.
+
+=head2 refresh
+
+  my $bool = $cache->cron;
+  $cache   = $cache->cron($bool);
+
+The refresh policy to use. Defaults to 'session'.
+
 =head1 METHODS
 
 =head2 AUTOLOAD
@@ -307,6 +265,12 @@ If cron is enabled, defaults to "cron".
 Cache the return value from the L</"app">'s subroutine. Return cached data
 without refreshing if the cache exists and has not expired. Enqueue a
 refreshing job if L<Minion> is enabled.
+
+=head2 data
+
+  my $data = $backend->data;
+
+L<Mojo::Recache::Backend> shortcut to L<Mojo::Recache::Cache/"data">.
 
 =head2 enqueue
 
@@ -321,7 +285,7 @@ If L<Minion> is enabled, use L<Minion> to enqueue a new job for task "$method".
 If L<Minion> is enabled, check if a task "cache" for the provided cache name is
 enqueued.
 
-=head2 file
+=head2 expire
 
   my $file = $cache->file($name);
 
@@ -329,14 +293,22 @@ Return a L<Mojo::File> object for the specified cache file. The location is a
 child of L</"cachedir">, itself a child of L</"home">. The full directory path
 is created if it does not already exist.
 
-=head2 merge_options
+=head2 expired
+
+  my $file = $cache->file($name);
+
+Return a L<Mojo::File> object for the specified cache file. The location is a
+child of L</"cachedir">, itself a child of L</"home">. The full directory path
+is created if it does not already exist.
+
+=head2 file
 
   $cache = $cache->set_options(option => 'value');
   $cache = $cache->set_options(queue => 'monthly', delay => 0);
 
 Merge the specified arguments into </"options">.
 
-=head2 name
+=head2 remove
 
   my $name = $cache->name($sub_name => @args);
 
@@ -350,18 +322,6 @@ factors.
 Return the data from a cache file if it exists and has been modified within
 L</"expires"> seconds. Reapply any roles to the recreated object instance.
 
-=head2 short
-
-  $short = $cache->short($name);
-
-Return a shortened version of the cache name: the first 6 characters.
-
-=head2 start
-
-  $short = $cache->short($name);
-
-Return a shortened version of the cache name: the first 6 characters.
-
 =head2 store
 
   $data = $cache->store($sub_name => @args);
@@ -370,7 +330,7 @@ Run the specified subroutine from L</"app"> and store it in L</"file">,
 carefully retaining any applied roles to the object instance for
 reconstructing the data upon retrieval.
 
-=head2 use_options
+=head2 touch
 
   $cache = $cache->use_options(option => 'value');
   $cache = $cache->use_options(queue => 'monthly', delay => 0);
@@ -379,7 +339,7 @@ Create a new cache and merge the specified arguments into </"options">.
 
 =head1 DEPENDENCIES
 
-L<Mojolicious>, L<B::Deparse>, L<Storable>
+L<Mojolicious>
 
 =head2 optional
 

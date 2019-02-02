@@ -92,17 +92,19 @@ Used in a module:
   package Abc;
   use Mojo::Base -base;
   use Mojo::Recache;
-  has cache => sub { Mojo::Recache->new };
+  has recache => sub { Mojo::Recache->new(app => shift) };
   sub cacheable_thing {
+    my ($self, $value) = (shift, shift);
     sleep 5;
-    return time;
+    $self->cached ? $value + 1 : $value;
   }
 
   package main;
   use Abc;
-  my $abc = Abc->new;
-  warn $abc->cache->cacheable_thing;
-  warn $abc->cache->cacheable_thing;
+  my $abc = Abc->new->recache;
+  $abc->cacheable_thing(1);
+  warn $abc->[0];
+  warn $abc->cacheable_thing(1)->data->[0];
 
 Used in a main app:
 
@@ -111,16 +113,21 @@ Used in a main app:
     sleep 5;
     return time;
   }
-  my $cache = Mojo::Recache->new;
-  warn $cache->cacheable_thing;
-  warn $cache->cacheable_thing;
+  my $abc = Mojo::Recache->new;
+  $abc->cacheable_thing(1);
+  warn $abc->[0];
+  warn $abc->cacheable_thing(1)->data->[0];
 
 Used in a Mojolicious::Lite app:
 
   use Mojolicious::Lite;
-  helper cache => sub { Mojo::Recache->new(expires => 3600, app => shift) };
-  helper cacheable_think => sub { sleep 5; return time; };
-  get '/' => sub { $_[0]->render(text => $_[0]->cache->cacheable_thing) };
+  helper cache => sub { Mojo::Recache->new(app => shift) };
+  helper cacheable_thing => sub {
+    my ($self, $value) = (shift, shift);
+    sleep 5;
+    $self->cached ? $value + 1 : $value;
+  };
+  get '/' => sub { $_[0]->render(text => $_[0]->cacheable_thing(1)->data->[0]) };
   app->start;
 
 Refreshed with a minion worker (takes the same arguments as
@@ -150,9 +157,9 @@ L<Mojo::Recache> implements the following methods.
 =head2 AUTOLOAD
 
   package main;
-  sub cacheable_thing { sleep 5; return time; }
-  my $cache = Mojo::Recache->new;
-  warn $cache->cacheable_thing;
+  sub cacheable_thing { sleep $_[0]->cached ? $_[0]+1 : $_[0] }
+  my $abc = Mojo::Recache->new;
+  warn $abc->cacheable_thing->data;
 
 Cache the return value from the L</"app">'s subroutine. Return cached data
 without refreshing if the cache exists and has not expired. Enqueue a
@@ -167,9 +174,9 @@ L<Mojo::Recache::Backend/"recachedir">.
 =head2 new
 
   package main;
-  sub cacheable_thing { sleep 5; return time; }
-  my $cache = Mojo::Recache->new;
-  warn $cache->cacheable_thing;
+  sub cacheable_thing { sleep $_[0]->cached ? $_[0]+1 : $_[0] }
+  my $abc = Mojo::Recache->new;
+  warn $abc->cacheable_thing->data;
 
 Cache the return value from the L</"app">'s subroutine. Return cached data
 without refreshing if the cache exists and has not expired. Enqueue a
