@@ -8,7 +8,6 @@ use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
 sub retrieve {
   my $self = shift;
   return if $self->expired;
-#warn @{$self->cache->args} if $self->cache->method eq 'cacheable_thing';
   return $self->data if $self->data;
   eval {
     local $Storable::Eval = 1 || $Storable::Eval;
@@ -23,11 +22,8 @@ sub retrieve {
 
 sub store {
   my $self = shift;
-#warn @{$self->cache->args} if $self->cache->method eq 'cacheable_thing';
   return $self unless defined $self->app;
-  my $app = $self->app->can('cached') ? $self->app->cached(1) : $self->app;
-  my $method = $self->cache->method;
-  $self->cache->data($app->$method(@{$self->cache->args}))->remove_roles;
+  $self->cache_method;
   eval {
     local $Storable::Deparse = 1 || $Storable::Deparse;
     Storable::store($self->cache, $self->file);
@@ -115,6 +111,9 @@ L<Mojo::Recache::Backend::Storable> inherits all attributes from
 L<Mojo::Recache::Backend>.
 
 =head1 METHODS
+
+L<Mojo::Recache::Backend::Storable> inherits all methods from
+L<Mojo::Recache::Backend> and implements the following new ones.
 
 =head2 retrieve
 

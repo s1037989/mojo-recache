@@ -1,23 +1,21 @@
 package Mojo::Recache::Backend;
 use Mojo::Base 'Mojo::EventEmitter';
 
-use Mojo::Home;
 use Mojo::Recache::Cache;
 
 use Carp 'croak';
 use Scalar::Util 'blessed';
 use Time::Seconds;
 
-use constant DEBUG    => $ENV{MOJO_RECACHE_DEBUG}   || 0;
-use constant EXPIRES  => $ENV{MOJO_RECACHE_EXPIRES} || undef;
-use constant REFRESH  => $ENV{MOJO_RECACHE_REFRESH} || 'session';
+use constant CRON    => $ENV{MOJO_RECACHE_CRON}    || 0;
+use constant DEBUG   => $ENV{MOJO_RECACHE_DEBUG}   || 0;
+use constant EXPIRES => $ENV{MOJO_RECACHE_EXPIRES} || undef;
+use constant REFRESH => $ENV{MOJO_RECACHE_REFRESH} || 'session';
 
-# This attribute exists solely for the purpose of Mojo::Recache
-has app        => sub { scalar caller }, weak => 0;
-
-has cache      => undef;
-has delay      => 60;
-has expires    => sub {
+has app     => sub { scalar caller }, weak => 0;
+has cache   => undef;
+has delay   => 60;
+has expires => sub {
   {
     session => undef,
     once    => 0,
@@ -28,11 +26,12 @@ has expires    => sub {
     yearly  => ONE_YEAR,
   }
 };
-has minion     => undef, weak => 1;
-has options    => sub { {attempts => 3} };
-has recachedir => sub { die };
-has refresh    => REFRESH;
+has home    => sub { die };
+has minion  => undef, weak => 1;
+has options => sub { {attempts => 3} };
+has refresh => REFRESH;
 
+# Shortcut to data object methods
 sub AUTOLOAD {
   my $self = shift;
 
@@ -41,6 +40,25 @@ sub AUTOLOAD {
     unless blessed $self && $self->isa(__PACKAGE__);
 
   $self->cache->data->$method(@_);
+}
+
+sub cache_method {
+  my $self = shift;
+
+  my $method = $self->cache->method;
+  my $args   = $self->cache->args;
+  $self->app->cached(1) if blessed $self->app && $self->app->can('cached');
+  my $data;
+  if ( blessed $self->app ) {
+    $data = $self->app->$method(@$args);
+  } else {
+    my $app = \&{$self->app.'::'.$method};
+    $data = $app->(@$args);
+  }
+  $self->app->cached(0) if blessed $self->app && $self->app->can('cached');
+  $self->cache->data($data)->remove_roles;
+
+  return $self;
 }
 
 sub data { shift->cache->data }
@@ -53,13 +71,24 @@ sub DESTROY {
 
 sub enqueue {
   my $self = shift;
-  $self->emit('enqueue');
-  return $self;
+  my $minion = $self->minion or return;
+  my $cache = $self->cache;
+  $self->enqueued($cache->name) or
+    $self->emit(enqueued => $minion->enqueue(recache => [$cache->name] => $self->options));
+  return $cache->name;
 }
 
 sub enqueued {
-  my $self = shift;
-  return 0;
+  my ($self, $name) = (shift, shift);
+  my $minion = $self->minion or return;
+  my $jobs;
+  my $limit = 1;
+  do {
+    # LOW: Is offset and limit required?
+    #      If not, remove the loop.
+    $jobs = $minion->backend->list_jobs(0, $minion->backoff->($limit), {tasks => ['recache'], $self->cron ? () : (states => ['active', 'inactive', 'failed'], queues => [$self->options->{queue}])})->{jobs};
+  } while ( @$jobs >= $minion->backoff->($limit++) );
+  return scalar grep { $_->{args}->[1] eq $name && ($self->cron ? $_->{queue} ne 'recache' : 1) } @$jobs;
 }
 
 sub expire { shift->remove }
@@ -73,24 +102,16 @@ sub expired {
 
 sub file {
   my $self = shift;
-  $self->recachedir->make_path->child($self->cache->name);
+  $self->home->make_path->child($self->cache->name);
 }
 
-sub remove {
-  my $self = shift;
-  $self->file->remove;
-  $self->emit('removed');
-}
+sub remove { shift->emit('removed')->file->remove }
 
 sub retrieve { croak 'Method "retrieve" not implemented by subclass' }
 
 sub store { croak 'Method "store" not implemented by subclass' }
 
-sub touch {
-  my $self = shift;
-  $self->file->touch;
-  $self->emit('touched');
-}
+sub touch { shift->emit('touched')->file->touch }
 
 1;
 
@@ -117,6 +138,20 @@ backends, like L<Mojo::Recache::Backend::Storable>.
 
 L<Mojo::Recache> inherits all events from L<Mojo::EventEmitter> and can emit the
 following new ones.
+
+=head2 enqueued
+
+  $backend->on(enqueued => sub {
+    my $backend = shift;
+    ...
+  });
+
+Emitted after a cache refresh job has been enqueued.
+
+  $backend->on(enqueued => sub {
+    my $name = shift->cache->name;
+    say "Cache $name has been enqueued.";
+  });
 
 =head2 removed
 
@@ -157,11 +192,11 @@ Write warnings to STDERR when true. Defaults to false.
 
 =head2 MOJO_RECACHE_EXPIRES
 
-Write warnings to STDERR when true. Defaults to false.
+The default policy for number of seconds to expire the cache. Defaults to undef.
 
 =head2 MOJO_RECACHE_REFRESH
 
-Write warnings to STDERR when true. Defaults to false.
+The default policy to use to expire the cache. Defaults to 'session'.
 
 =head1 ATTRIBUTES
 
@@ -169,26 +204,25 @@ L<Mojo::Recache> implements the following attributes.
 
 =head2 app
 
-  my $app = $cache->app;
-  $cache  = $cache->app(__PACKAGE__);
+  my $app  = $backend->app;
+  $backend = $backend->app(MyApp->new);
 
-Package, class, or object to provide caching for. Note that this attribute is
-weakened.
+Application to cache, defaults to the caller's package.
 
 =head2 cache
 
-  my $cachedir = $cache->cachedir;
-  $cache       = $cache->cachedir($dirname);
+  my $cache = $backend->cache;
+  $backend  = $backend->cache(Mojo::Recache::Cache->new);
 
-Child directory of L</"home"> where cache files are stored and retrieved.
-Defaults to 'cache'.
+A single cache instance for one unique call to a method in the application.
 
 =head2 delay
 
-  my $bool = $cache->cron;
-  $cache   = $cache->cron($bool);
+  my $seconds = $backend->delay;
+  $backend    = $backend->delay($seconds);
 
-Instead of refreshing caches with a L<Minion> worker, use cron.
+The number of seconds to delay processing a job after it has been enqueued,
+defaults to 60 seconds.
 
 =head2 expires
 
@@ -206,15 +240,16 @@ A refresh policy of 0 seconds is never expired.
 
 =head2 minion
 
-  my $minion = $cache->minion;
-  $cache     = $cache->minion(Minion->new);
+  my $minion = $backend->minion;
+  $backend   = $backend->minion(Minion->new);
 
-L<Minion> object to handle automatic refreshing; disabled by default.
+L<Minion> object to handle automatic refreshing; disabled by default. Note that
+this attribute is weakened.
 
 =head2 options
 
-  my $options = $cache->options;
-  $cache      = $cache->options({%options});
+  my $hash = $backend->options;
+  $backend = $backend->options($hash);
 
 Hashref of options to be used by L<Minion> when auto-refreshing cache data.
 
@@ -228,7 +263,7 @@ Defaults to 3.
 
 =item delay
 
-If cron is disabled, defaults to 1 hour.
+If cron is disabled, defaults to 1 minute.
 If cron is enabled, defaults to no delay.
 
 =item queue
@@ -238,7 +273,7 @@ If cron is enabled, defaults to "cron".
 
 =back
 
-=head2 recachedir
+=head2 home
 
   my $home = $cache->home;
   $cache   = $cache->home(Mojo::Home->new);
