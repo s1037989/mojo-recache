@@ -30,8 +30,8 @@ $cleanup->home->remove_tree if $cleanup->home->basename eq 'recache';
   ok $@, 'not a SCALAR reference (overload disabled)';
   is $array->cache->data->[0], 99, 'right first value in cached data array';
   is $array->cache->method, 'array', 'right method name in cache';
-  isa_ok $array->home, 'Mojo::Home';
-  is $array->home->basename, 'recache', 'right recache child of home';
+  isa_ok $array->recache->home, 'Mojo::Home';
+  is $array->recache->home->basename, 'recache', 'right recache child of home';
   like $array->cache->name, qr(^[0-9a-f]{32}$), 'looks like a name';
   ok -e $array->file->touch->to_string, 'file exists';
 

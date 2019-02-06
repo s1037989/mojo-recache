@@ -10,26 +10,9 @@ use Time::Seconds;
 use constant CRON    => $ENV{MOJO_RECACHE_CRON}    || 0;
 use constant DEBUG   => $ENV{MOJO_RECACHE_DEBUG}   || 0;
 use constant EXPIRES => $ENV{MOJO_RECACHE_EXPIRES} || undef;
-use constant REFRESH => $ENV{MOJO_RECACHE_REFRESH} || 'session';
 
-has app     => sub { scalar caller }, weak => 0;
 has cache   => undef;
-has delay   => 60;
-has expires => sub {
-  {
-    session => undef,
-    once    => 0,
-    hourly  => ONE_HOUR,
-    daily   => ONE_DAY,
-    weekly  => ONE_WEEK,
-    monthly => ONE_MONTH,
-    yearly  => ONE_YEAR,
-  }
-};
-has home    => sub { die };
-has minion  => undef, weak => 1;
-has options => sub { {attempts => 3} };
-has refresh => REFRESH;
+has recache => sub { die };
 
 # Shortcut to data object methods
 sub AUTOLOAD {
@@ -47,15 +30,16 @@ sub cache_method {
 
   my $method = $self->cache->method;
   my $args   = $self->cache->args;
-  $self->app->cached(1) if blessed $self->app && $self->app->can('cached');
+  my $app    = $self->recache->app;
+  $app->cached(1) if blessed $app && $app->can('cached');
   my $data;
-  if ( blessed $self->app ) {
-    $data = $self->app->$method(@$args);
+  if ( blessed $app ) {
+    $data = $app->$method(@$args);
   } else {
-    my $app = \&{$self->app.'::'.$method};
-    $data = $app->(@$args);
+    my $code = \&{$app.'::'.$method};
+    $data = $code->(@$args);
   }
-  $self->app->cached(0) if blessed $self->app && $self->app->can('cached');
+  $app->cached(0) if blessed $app && $app->can('cached');
   $self->cache->data($data)->remove_roles;
 
   return $self;
@@ -65,30 +49,31 @@ sub data { shift->cache->data }
 
 sub DESTROY {
   my $self = shift;
-  return unless defined $self->expires->{$self->refresh};
+  return unless blessed $self->recache;
+  return unless defined $self->recache->expires->{$self->recache->refresh};
   DEBUG and warn sprintf '-- removing cache %s', $self->file;
 }
 
 sub enqueue {
   my $self = shift;
-  my $minion = $self->minion or return;
+  my $minion = $self->recache->minion or return;
   my $cache = $self->cache;
   $self->enqueued($cache->name) or
-    $self->emit(enqueued => $minion->enqueue(recache => [$cache->name] => $self->options));
+    $self->emit(enqueued => $minion->enqueue(recache => [$cache->name] => $self->recache->options));
   return $cache->name;
 }
 
 sub enqueued {
   my ($self, $name) = (shift, shift);
-  my $minion = $self->minion or return;
+  my $minion = $self->recache->minion or return;
   my $jobs;
   my $limit = 1;
   do {
     # LOW: Is offset and limit required?
     #      If not, remove the loop.
-    $jobs = $minion->backend->list_jobs(0, $minion->backoff->($limit), {tasks => ['recache'], $self->cron ? () : (states => ['active', 'inactive', 'failed'], queues => [$self->options->{queue}])})->{jobs};
+    $jobs = $minion->backend->list_jobs(0, $minion->backoff->($limit), {tasks => ['recache'], CRON ? () : (states => ['active', 'inactive', 'failed'], queues => [$self->recache->options->{queue}])})->{jobs};
   } while ( @$jobs >= $minion->backoff->($limit++) );
-  return scalar grep { $_->{args}->[1] eq $name && ($self->cron ? $_->{queue} ne 'recache' : 1) } @$jobs;
+  return scalar grep { $_->{args}->[1] eq $name && (CRON ? $_->{queue} ne 'recache' : 1) } @$jobs;
 }
 
 sub expire { shift->remove }
@@ -96,13 +81,13 @@ sub expire { shift->remove }
 sub expired {
   my $self = shift;
   return 1 if ! -e $self->file->to_string;
-  my $expires = $self->expires->{$self->refresh || REFRESH} || EXPIRES;
+  my $expires = $self->recache->expires->{$self->recache->refresh} || EXPIRES;
   return $expires && time - $self->file->stat->mtime > $expires;
 }
 
 sub file {
   my $self = shift;
-  $self->home->make_path->child($self->cache->name);
+  $self->recache->home->make_path->child($self->cache->name);
 }
 
 sub remove { shift->emit('removed')->file->remove }
@@ -300,6 +285,12 @@ The refresh policy to use. Defaults to 'session'.
 Cache the return value from the L</"app">'s subroutine. Return cached data
 without refreshing if the cache exists and has not expired. Enqueue a
 refreshing job if L<Minion> is enabled.
+
+=head2 cache_method
+
+  $backend = $backend->cache_method;
+
+Call L<Mojo::Recache::Cache/"method"> with L<Mojo::Recache::Cache/"args">.
 
 =head2 data
 

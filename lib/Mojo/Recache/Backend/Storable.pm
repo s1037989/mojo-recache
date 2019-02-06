@@ -8,7 +8,7 @@ use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
 sub retrieve {
   my $self = shift;
   return if $self->expired;
-  return $self->data if $self->data;
+  return $self->cache->data if $self->cache->data;
   eval {
     local $Storable::Eval = 1 || $Storable::Eval;
     $self->cache(Storable::retrieve($self->file));
@@ -22,7 +22,7 @@ sub retrieve {
 
 sub store {
   my $self = shift;
-  return $self unless defined $self->app;
+  return $self unless defined $self->recache->app;
   $self->cache_method;
   eval {
     local $Storable::Deparse = 1 || $Storable::Deparse;
