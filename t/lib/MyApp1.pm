@@ -1,4 +1,4 @@
-package MyApp;
+package MyApp1;
 use Mojo::Base -base;
 
 use Mojo::Recache;
@@ -10,12 +10,12 @@ has recache => sub {
 
 sub array {
   my $self = shift;
-  return [map { $self->cached ? abs($_)*-1 : $_ } @_]
+  return [map { $self->cached ? abs($_)*-2 : $_ } @_]
 }
 
 sub array2 {
   my $self = shift;
-  return [map { $self->cached ? abs($_)*-1 : $_ } @_]
+  return [map { $self->cached ? abs($_)*-2 : $_ } @_]
 }
 
 1;

@@ -1,30 +1,74 @@
 package Mojo::Recache::Cache;
-use Mojo::Base 'Mojo::EventEmitter';
+use Mojo::Base -base;
 
 use Mojo::JSON 'j';
 use Mojo::Util qw(b64_encode md5_sum);
 
-use B::Deparse;
 use Data::Structure::Util 'unbless';
 use Scalar::Util 'blessed';
 
-use constant DEBUG => $ENV{MOJO_RECACHE_DEBUG} || 0;
+has [qw(args cached data method options queue recache roles)];
 
-has args    => sub { [] };
-has cached  => 0;
-has data    => undef;
-has method  => sub { die };
-has name    => sub { md5_sum(b64_encode(shift->serialize)) };
-has options => sub { [] };
-has roles   => sub { [] };
-
-sub new {
-  my $self = shift->SUPER::new(@_);
-  $self->$_ for qw/args data method name roles/;
-  DEBUG and warn sprintf '-- new cache %s', $self->name;
-  $self->emit('new');
-  return $self;
+sub update {
+  my ($self, $force) = @_;
+  return $self->store if $force;
+  $self->retrieve or $self->store;
 }
+
+sub app { shift->recache->app }
+
+sub enqueue {}
+
+sub enqueued {}
+
+sub expire { shift->remove }
+
+sub expired { shift->expires < time }
+
+sub expires {
+  my $self = shift;
+  return 0 unless -e $self->file;
+  my $mtime = $self->file->stat->mtime;
+  my $ttl = $self->recache->queues->{$self->queue} || 0;
+  return $mtime + $ttl;
+}
+
+sub file {
+  my $self = shift;
+  $self->recache->home->child($self->queue)->make_path->child($self->name);
+}
+
+sub name { md5_sum(b64_encode(shift->serialize)) }
+
+sub remove { $_[0]->recache->backend->remove($_[0]->file) }
+
+sub retrieve {
+  my $self = shift;
+  return if $self->expired;
+  return $self->cache(1) if $self->data;
+  my $cache = $self->recache->backend->retrieve($self->file) or return;
+  $cache->recache($self->recache)->restore_roles;
+  return $cache;
+}
+
+sub store {
+  my $self = shift;
+  my $app    = $self->app;
+  my $method = $self->method;
+  $app->cached(1) if blessed $app && $app->can('cached');
+  if ( blessed $app ) {
+    $self->data($app->$method(@{$self->args}));
+  } else {
+    my $code = \&{$app.'::'.$method};
+    $self->data($code->(@{$self->args}));
+  }
+  $app->cached(0) if blessed $app && $app->can('cached');
+  my $cache = $self->recache->backend->store($self->remove_roles) or return;
+  $cache->recache($self->recache)->restore_roles;
+  return $cache;
+}
+
+sub touch { $_[0]->recache->backend->touch($_[0]->file) }
 
 sub reftype { Scalar::Util::reftype(shift->data) }
 
@@ -60,185 +104,21 @@ sub serialize {
   return j([
     map {
       ref eq 'CODE' ? $deparse->coderef2text($_) : unbless($_)
-    } $self->method, $self->args, $self->options
+    } $self->method, $self->args, ref $self->recache->app, $self->queue, $self->options
   ]);
 }
 
 sub short { substr(shift->name, 0, 6) }
 
+package Mojo::Recache::Cache::overload;
+use Mojo::Base 'Mojo::Recache::Cache';
+use overload
+  '@{}'    => sub { ${$_[0]}->data || [] },
+  '%{}'    => sub { ${$_[0]}->data || {} },
+  bool     => sub {1},
+  '""'     => sub { ${$_[0]}->data || "" },
+  fallback => 1;
+
+sub new { bless \$_[1], $_[0] }
+
 1;
-
-=encoding utf8
-
-=head1 NAME 
-
-Mojo::Recache::Cache - Object class for cached instances
-
-=head1 SYNOPSIS
-
-  my $cache = Mojo::Recache::Cache->new(method => 'cacheable_thing');
-  warn $cache->name;
-
-=head1 DESCRIPTION
-
-L<Mojo::Recache::Cache> provides caching and automatic refreshing for your app. It
-
-=head1 EVENTS
-
-L<Mojo::Recache> inherits all events from L<Mojo::EventEmitter> and can emit the
-following new ones.
-
-=head2 new
-
-  $cache->on(new => sub {
-    my $cache = shift;
-    ...
-  });
-
-Emitted after a new cache instance and its attributes is created.
-
-  $cache->on(new => sub {
-    my $name = shift->name;
-    say "Cache $name has been created.";
-  });
-
-=head1 ENVIRONMENT
-
-The behavior of L<Mojo::Recache::Backend::Storable> can be controlled through
-the use of the following environment variables.
-
-=head2 MOJO_RECACHE_DEBUG
-
-Write warnings to STDERR when true. Defaults to false.
-
-=head1 ATTRIBUTES
-
-L<Mojo::Recache::Cache> inherits the attributes from L<Mojo::EventEmitter> and
-implements the following new ones.
-
-=head2 args
-
-  my $app = $cache->app;
-  $cache  = $cache->app(__PACKAGE__);
-
-Package, class, or object to provide caching for. Note that this attribute is
-weakened.
-
-=head2 cached
-
-  my $cached = $cache->cached;
-  $cache     = $cache->cached($bool);
-
-Child directory of L</"home"> where cache files are stored and retrieved.
-Defaults to 'cache'.
-
-=head2 data
-
-  my $data = $cache->data;
-  $cache   = $cache->data($data);
-
-Instead of refreshing caches with a L<Minion> worker, use cron.
-
-=head2 method
-
-  my $method = $cache->method;
-  $cache     = $cache->method($string);
-
-When to consider a cachefile to be too old and force refreshing. Defaults to 30
-days.
-
-=head2 name
-
-  my $name = $cache->name;
-  $cache   = $cache->name($string);
-
-The name of the cache instance. Defaults to the L<Mojo::Util/"md5_sum"> of the
-L<Mojo::Util/"b64_encode"> of L</"serialize">.
-
-=head2 options
-
-  my $options = $cache->options;
-  $cache      = $cache->options($array);
-
-Extra arguments for L</"serialize"> to generate a random name.
-
-=head2 roles
-
-  my $roles = $cache->roles;
-  $cache    = $cache->roles($array);
-
-The roles that should be applied to the data for this cache when retrieved.
-
-Roles cannot be stored in the default L<Mojo::Recache::Backend::Storable> cache
-and therefore must be removed.
-
-=head1 METHODS
-
-=head2 new
-
-  package main;
-  sub cacheable_thing { sleep 5; return time; }
-  my $cache = Mojo::Recache->new;
-  warn $cache->cacheable_thing;
-
-Cache the return value from the L</"app">'s subroutine. Return cached data
-without refreshing if the cache exists and has not expired. Enqueue a
-refreshing job if L<Minion> is enabled.
-
-=head2 reftype
-
-  my $cache = $cache->enqueue($method => @args);
-
-If L<Minion> is enabled, use L<Minion> to enqueue a new job for task "$method".
-
-=head2 short
-
-  my $file = $cache->file($name);
-
-Return a L<Mojo::File> object for the specified cache file. The location is a
-child of L</"cachedir">, itself a child of L</"home">. The full directory path
-is created if it does not already exist.
-
-=head2 remove_roles
-
-  my $name = $cache->name($sub_name => @args);
-
-Generate a unique name for a cache using all of the specified arguments as
-factors.
-
-=head2 restore_roles
-
-  $cache = $cache->set_options(option => 'value');
-  $cache = $cache->set_options(queue => 'monthly', delay => 0);
-
-Merge the specified arguments into </"options">.
-
-=head2 serialize
-
-  my $bool = $cache->enqueued($name);
-
-If L<Minion> is enabled, check if a task "cache" for the provided cache name is
-enqueued.
-
-=head2 short
-
-  $short = $cache->short($name);
-
-Return a shortened version of the cache name: the first 6 characters.
-
-=head1 DEPENDENCIES
-
-L<Mojolicious>, L<B::Deparse>, L<Data::Structure::Util>
-
-=head1 LICENSE AND COPYRIGHT
-
-Copyright (C) 2019 Stefan Adams and others.
-
-This program is free software, you can redistribute it and/or modify it under
-the terms of the Artistic License version 2.0.
-
-=head1 SEE ALSO
-
-L<https://github.com/s1037989/mojo-recache>
-
-=cut
