@@ -9,12 +9,6 @@ use Scalar::Util 'blessed';
 
 has [qw(args cached data method options queue recache roles)];
 
-sub update {
-  my ($self, $force) = @_;
-  return $self->store if $force;
-  $self->retrieve or $self->store;
-}
-
 sub app { shift->recache->app }
 
 sub enqueue {}
@@ -50,25 +44,6 @@ sub retrieve {
   $cache->recache($self->recache)->restore_roles;
   return $cache;
 }
-
-sub store {
-  my $self = shift;
-  my $app    = $self->app;
-  my $method = $self->method;
-  $app->cached(1) if blessed $app && $app->can('cached');
-  if ( blessed $app ) {
-    $self->data($app->$method(@{$self->args}));
-  } else {
-    my $code = \&{$app.'::'.$method};
-    $self->data($code->(@{$self->args}));
-  }
-  $app->cached(0) if blessed $app && $app->can('cached');
-  my $cache = $self->recache->backend->store($self->remove_roles) or return;
-  $cache->recache($self->recache)->restore_roles;
-  return $cache;
-}
-
-sub touch { $_[0]->recache->backend->touch($_[0]->file) }
 
 sub reftype { Scalar::Util::reftype(shift->data) }
 
@@ -110,6 +85,31 @@ sub serialize {
 
 sub short { substr(shift->name, 0, 6) }
 
+sub store {
+  my $self = shift;
+  my $app    = $self->app;
+  my $method = $self->method;
+  $app->cached(1) if blessed $app && $app->can('cached');
+  if ( blessed $app ) {
+    $self->data($app->$method(@{$self->args}));
+  } else {
+    my $code = \&{$app.'::'.$method};
+    $self->data($code->(@{$self->args}));
+  }
+  $app->cached(0) if blessed $app && $app->can('cached');
+  my $cache = $self->recache->backend->store($self->remove_roles) or return;
+  $cache->recache($self->recache)->restore_roles;
+  return $cache;
+}
+
+sub touch { $_[0]->recache->backend->touch($_[0]->file) }
+
+sub update {
+  my ($self, $force) = @_;
+  return $self->store if $force;
+  $self->retrieve or $self->store;
+}
+
 package Mojo::Recache::Cache::overload;
 use Mojo::Base 'Mojo::Recache::Cache';
 use overload
@@ -122,3 +122,122 @@ use overload
 sub new { bless \$_[1], $_[0] }
 
 1;
+
+=encoding utf8
+
+=head1 NAME
+
+Mojo::Recache::Backend - Backend base class
+
+=head1 SYNOPSIS
+
+  package Mojo::Recache::Backend::MyBackend;
+  use Mojo::Base 'Mojo::Recache::Backend';
+
+  sub broadcast         {...}
+  sub dequeue           {...}
+
+=head1 DESCRIPTION
+
+L<Mojo::Recache::Backend> is an abstract base class for L<Mojo::Recache> backends, like
+L<Mojo::Recache::Backend::Pg>.
+
+=head1 ATTRIBUTES
+
+L<Mojo::Recache::Backend> implements the following attributes.
+
+=head2 args
+
+  my $args = $cache->args;
+  $cache   = $cache->args([]);
+
+=head2 cached
+
+=head2 data
+
+=head2 method
+
+=head2 options
+
+=head2 queue
+
+=head2 recache
+
+=head2 roles
+
+=head1 METHODS
+
+L<Mojo::Recache::Backend> inherits all methods from L<Mojo::Base> and implements the
+following new ones.
+
+=head2 app
+
+  my $app = $cache->app;
+
+Alias for L</"recache">C<->>L<Mojo::Recache/"app">.
+
+=head2 expire
+
+=head2 expired
+
+=head2 expires
+
+=head2 file
+
+=head2 name
+
+=head2 remove
+
+=head2 retrieve
+
+=head2 reftype
+
+=head2 remove_roles
+
+=head2 restore_roles
+
+=head2 serialize
+
+=head2 short
+
+=head2 store
+
+=head2 touch
+
+=head2 update
+
+=head1 OPERATORS
+
+The constructor for L<Mojo::Recache::Cache::overload> returns a blessed
+reference to the L<Mojo::Recache::Cache> object and overloads the following
+operators.
+
+=head2 array
+
+  my @data = @$cache;
+
+Alias for L</"data">.
+
+=head2 bool
+
+  my $bool = !!$cache;
+
+Always true.
+
+=head2 hash
+
+  my %data = %$cache;
+
+Alias for L</"data">.
+
+=head2 stringify
+
+  my $data = "$cache";
+
+Alias for L</"data">.
+
+=head1 SEE ALSO
+
+L<Mojo::Recache>
+
+=cut

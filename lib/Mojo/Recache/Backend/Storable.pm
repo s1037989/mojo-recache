@@ -35,3 +35,50 @@ sub store {
 }
 
 1;
+
+=encoding utf8
+
+=head1 NAME
+
+Mojo::Recache::Backend::Storable - Storable backend
+
+=head1 SYNOPSIS
+
+  use Mojo::Recache::Backend::Storable;
+
+  my $backend = Mojo::Recache::Backend::Storable->new;
+
+=head1 DESCRIPTION
+
+L<Mojo::Recache::Backend::Storable> is a backend for L<Mojo::Recache> based on
+L<Storable>.
+
+=head1 ATTRIBUTES
+
+L<Mojo::Recache::Backend::Storable> inherits all attributes from
+L<Mojo::Recache::Backend>.
+
+=head1 METHODS
+
+L<Mojo::Recache::Backend::Storable> inherits all methods from
+L<Mojo::Recache::Backend> and implements the following new ones.
+
+=head2 retrieve
+
+  my $cache = $backend->retrieve(Mojo::File->new);
+
+Retrieve a persistent L<Mojo::Recache::Cache> object. Meant to be overloaded
+in a subclass.
+
+=head2 store
+
+  my $cache = $backend->store(Mojo::Recache::Cache->new);
+
+Store a persistent L<Mojo::Recache::Cache> object. Meant to be overloaded
+in a subclass.
+
+=head1 SEE ALSO
+
+L<Mojo::Recache>
+
+=cut
